@@ -326,7 +326,7 @@ const currentPage = ref(1);
 const pageInputValue = ref('1');
 const pageCount = ref(0);
 const scale = ref(1);
-const zoomSelect = ref('page-width');
+const zoomSelect = ref('auto');
 const pdfLoaded = ref(false);
 const aboutOpen = ref(false);
 const saving = ref(false);
@@ -707,6 +707,42 @@ function onWindowKeydown(event: KeyboardEvent): void {
 }
 
 /**
+ * Ctrl/Cmd + wheel (and trackpad pinch, which browsers deliver as a
+ * ctrl-modified wheel) zooms the document towards the cursor instead of
+ * letting the browser zoom the whole OpenCloud page.
+ */
+function onViewerWheel(event: WheelEvent): void {
+  if (!event.ctrlKey && !event.metaKey) return;
+  event.preventDefault();
+  const container = containerElement.value;
+  const pdfViewer = viewer.value;
+  if (!container || !pdfViewer || !pdfLoaded.value) return;
+
+  // Normalize the delta to pixels; classic wheels report lines (Firefox)
+  // or a ±100px tick (Chromium), pinch gestures small pixel deltas.
+  const deltaPixels =
+    event.deltaMode === WheelEvent.DOM_DELTA_LINE
+      ? event.deltaY * 40
+      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+        ? event.deltaY * 400
+        : event.deltaY;
+  const oldScale = pdfViewer.currentScale;
+  const newScale = Math.min(4, Math.max(0.25, oldScale * 1.1 ** (-deltaPixels / 100)));
+  if (newScale === oldScale) return;
+
+  // Keep the document point under the cursor stationary: PDFViewer applies
+  // the new layout sizes synchronously, so the scroll offsets can be
+  // corrected right after setting the scale.
+  const rect = container.getBoundingClientRect();
+  const pointX = event.clientX - rect.left;
+  const pointY = event.clientY - rect.top;
+  pdfViewer.currentScale = newScale;
+  const ratio = pdfViewer.currentScale / oldScale;
+  container.scrollLeft = (container.scrollLeft + pointX) * ratio - pointX;
+  container.scrollTop = (container.scrollTop + pointY) * ratio - pointY;
+}
+
+/**
  * Vite/lightningcss drops `-webkit-mask-image: none` from the bundled CSS
  * (only the `mask` shorthand survives). Firefox 153 still honors the
  * pdf.js `-webkit-mask-image` longhand on ::before, which is exactly what
@@ -749,6 +785,8 @@ function removeMaskKillStyles(): void {
 onMounted(() => {
   installMaskKillStyles();
   window.addEventListener('keydown', onWindowKeydown, true);
+  // passive:false so preventDefault can suppress the browser page zoom.
+  containerElement.value!.addEventListener('wheel', onViewerWheel, {passive: false});
   GlobalWorkerOptions.workerPort ??= new PdfWorker();
 
   eventBus = new EventBus();
@@ -786,8 +824,8 @@ onMounted(() => {
   });
   eventBus.on('pagesinit', () => {
     if (!viewer.value) return;
-    viewer.value.currentScaleValue = 'page-width';
-    zoomSelect.value = 'page-width';
+    viewer.value.currentScaleValue = 'auto';
+    zoomSelect.value = 'auto';
   });
   eventBus.on('pagechanging', ({pageNumber}: {pageNumber: number}) => {
     currentPage.value = pageNumber;
@@ -821,6 +859,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onWindowKeydown, true);
+  containerElement.value?.removeEventListener('wheel', onViewerWheel);
   window.clearTimeout(commitTimer);
   loadToken++;
   resizeObserver?.disconnect();

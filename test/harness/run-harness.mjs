@@ -32,6 +32,8 @@ try {
     pageCount?.includes('von 2'),
     `page count should show "von 2", got "${pageCount}"`,
   );
+  const initialZoom = await page.inputValue('.zoom-select');
+  check(initialZoom === 'auto', `initial zoom should be "auto", got "${initialZoom}"`);
   check(
     (await page.locator('.save-button').count()) === 0,
     'toolbar must not contain a save button (OpenCloud top bar saves)',
@@ -113,6 +115,19 @@ try {
   await page.waitForTimeout(400);
   const zoomValue = await page.inputValue('.zoom-select');
   check(zoomValue === '1', `zoom select should hold "1" (100 %), got "${zoomValue}"`);
+
+  // 6b. Ctrl+wheel zooms the document (and does not stay on the preset).
+  const viewerBox = await page.locator('.viewer-scroll').boundingBox();
+  await page.mouse.move(viewerBox.x + viewerBox.width / 2, viewerBox.y + 200);
+  await page.keyboard.down('Control');
+  await page.mouse.wheel(0, -300);
+  await page.keyboard.up('Control');
+  await page.waitForTimeout(400);
+  const wheelZoom = await page.inputValue('.zoom-select');
+  check(
+    wheelZoom === 'custom' || Number.parseFloat(wheelZoom) > 1,
+    `ctrl+wheel should zoom in (custom scale), zoom select shows "${wheelZoom}"`,
+  );
 
   // 7. The about dialog surfaces the injected build metadata.
   await page.click('button[title="Über PDF Annotator"]');
