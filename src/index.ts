@@ -2,9 +2,11 @@ import {
   type ApplicationInformation,
   AppWrapperRoute,
   defineWebApplication,
+  useUserStore,
 } from '@opencloud-eu/web-pkg';
 import {useGettext} from 'vue3-gettext';
 import App from './App.vue';
+import {userContext} from './userContext';
 
 const appId = 'pdf-annotator';
 
@@ -12,6 +14,15 @@ export default defineWebApplication({
   setup() {
     const {$gettext} = useGettext();
     const routeName = 'pdf-annotator-file';
+
+    try {
+      // Comments created in this session are attributed to the signed-in
+      // user in the comment summary sidebar.
+      const {user} = useUserStore();
+      userContext.displayName = user?.displayName ?? '';
+    } catch {
+      userContext.displayName = '';
+    }
 
     const routes = [
       {

@@ -147,6 +147,17 @@
       <button
         type="button"
         class="tb-btn"
+        :class="{toggled: sidebarOpen}"
+        title="Kommentare"
+        aria-label="Kommentare"
+        :disabled="!pdfLoaded"
+        @click="toggleSidebar"
+      >
+        <span class="tb-icon icon-comments" aria-hidden="true" />
+      </button>
+      <button
+        type="button"
+        class="tb-btn"
         title="Über PDF Annotator"
         aria-label="Über PDF Annotator"
         @click="aboutOpen = true"
@@ -155,10 +166,28 @@
       </button>
     </header>
 
-    <main ref="regionElement" class="viewer-region">
+    <main ref="regionElement" class="viewer-region" :class="{'with-sidebar': sidebarOpen}">
       <div ref="containerElement" class="viewer-scroll">
         <div ref="viewerElement" class="pdfViewer" />
       </div>
+      <aside v-if="sidebarOpen" class="pdfa-comments-sidebar" aria-label="Kommentare">
+        <div class="pdfa-comments-header">Kommentare ({{ sidebarComments.length }})</div>
+        <p v-if="!sidebarComments.length" class="pdfa-comments-empty">
+          Keine Kommentare im Dokument.
+        </p>
+        <ul v-else class="pdfa-comments-list">
+          <li v-for="entry in sidebarComments" :key="entry.key">
+            <button type="button" class="pdfa-comment-entry" @click="goToComment(entry)">
+              <span class="pdfa-comment-meta">
+                <strong>{{ entry.author || 'Unbekannt' }}</strong>
+                <span>Seite {{ entry.page }}</span>
+              </span>
+              <span v-if="entry.dateLabel" class="pdfa-comment-date">{{ entry.dateLabel }}</span>
+              <span class="pdfa-comment-body">{{ entry.text }}</span>
+            </button>
+          </li>
+        </ul>
+      </aside>
       <div v-if="error" class="error-banner">{{ error }}</div>
       <div v-if="aboutOpen" class="pdfa-about-backdrop" @pointerdown.self="closeAbout">
         <div class="pdfa-about-dialog" role="dialog" aria-label="Über PDF Annotator">
@@ -201,6 +230,7 @@ import {
   AnnotationEditorType,
   getDocument,
   GlobalWorkerOptions,
+  PDFDateString,
   version as pdfjsVersion,
   type PDFDocumentLoadingTask,
   type PDFDocumentProxy,
@@ -211,6 +241,7 @@ import 'pdfjs-dist/legacy/web/pdf_viewer.css';
 import type {Resource} from '@opencloud-eu/web-client';
 import {computed, onBeforeUnmount, onMounted, ref, shallowRef, watch} from 'vue';
 import {PdfCommentManager} from './commentManager';
+import {userContext} from './userContext';
 import iconCommentEdit from 'pdfjs-dist/legacy/web/images/comment-editButton.svg?url';
 import iconEditorDelete from 'pdfjs-dist/legacy/web/images/editor-toolbar-delete.svg?url';
 import iconSelect from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-selectTool.svg?url';
@@ -250,6 +281,7 @@ const ICON_LIGHT = '%23FBFBFE';
 const iconVars = {
   '--tbi-select': `url("${iconSelect}")`,
   '--tbi-about': `url("data:image/svg+xml,${encodeURIComponent(aboutIconSvg)}")`,
+  '--tbi-comments': `url("${iconCommentEdit}")`,
   '--tbi-freetext': `url("${iconFreeText}")`,
   '--tbi-highlight': `url("${iconHighlight}")`,
   '--tbi-ink': `url("${iconInk}")`,
@@ -329,6 +361,8 @@ const scale = ref(1);
 const zoomSelect = ref('auto');
 const pdfLoaded = ref(false);
 const aboutOpen = ref(false);
+const sidebarOpen = ref(false);
+const sidebarComments = ref<CommentEntry[]>([]);
 const saving = ref(false);
 const pendingCommit = ref(false);
 const error = ref('');
@@ -563,7 +597,150 @@ function setMode(mode: number): void {
   }
 }
 
+
+type CommentEntry = {
+  key: string;
+  author: string;
+  text: string;
+  page: number;
+  rect?: number[];
+  dateLabel?: string;
+};
+
+function formatCommentDate(value: unknown): string {
+  let date: Date | null = null;
+  if (value instanceof Date) {
+    date = value;
+  } else if (typeof value === 'string') {
+    date = (PDFDateString as {toDateObject: (v: unknown) => Date | null}).toDateObject(value);
+  } else if (typeof value === 'number') {
+    date = new Date(value);
+  }
+  if (!date || Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString('de-DE', {dateStyle: 'medium', timeStyle: 'short'});
+}
+
+/**
+ * Collects a summary of every comment in the document: comments stored in
+ * the PDF (author from the annotation's /T field) plus not-yet-saved
+ * comment edits from this session, attributed to the signed-in OpenCloud
+ * user. pdf.js does not persist an author for annotations it creates, so
+ * entries saved by this app show up without an author after reopening.
+ */
+async function collectComments(): Promise<CommentEntry[]> {
+  const doc = pdfDocument;
+  if (!doc) return [];
+  const entries: CommentEntry[] = [];
+
+  type SavedComment = {
+    id: string;
+    author: string;
+    text: string;
+    page: number;
+    rect?: number[];
+    dateLabel: string;
+  };
+  const saved: SavedComment[] = [];
+  for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
+    const page = await doc.getPage(pageNumber);
+    const annotations = (await page.getAnnotations()) as Array<{
+      id: string;
+      subtype?: string;
+      popupRef?: string | null;
+      contentsObj?: {str?: string};
+      titleObj?: {str?: string};
+      modificationDate?: string | null;
+      rect?: number[];
+    }>;
+    for (const annotation of annotations) {
+      if (annotation.subtype === 'Popup') continue;
+      const text = annotation.contentsObj?.str ?? '';
+      if (!annotation.popupRef || !text) continue;
+      saved.push({
+        id: String(annotation.id),
+        author: annotation.titleObj?.str ?? '',
+        text,
+        page: pageNumber,
+        rect: Array.isArray(annotation.rect) ? annotation.rect : undefined,
+        dateLabel: formatCommentDate(annotation.modificationDate),
+      });
+    }
+  }
+
+  // Unsaved changes: the annotation storage serializes edited comments as
+  // popup entries; editors without an annotation id are new in this session.
+  const removedIds = new Set<string>();
+  const overriddenIds = new Set<string>();
+  const {serializable} = doc.annotationStorage as unknown as {
+    serializable: {map: Map<string, Record<string, unknown>> | null};
+  };
+  for (const [uid, value] of serializable.map ?? []) {
+    if (!value) continue;
+    const annotationId = typeof value.id === 'string' ? value.id : '';
+    if (value.deleted) {
+      if (annotationId) removedIds.add(annotationId);
+      continue;
+    }
+    const popup = value.popup as {contents?: string; deleted?: boolean} | undefined;
+    if (!popup) continue;
+    if (annotationId) overriddenIds.add(annotationId);
+    if (popup.deleted || !popup.contents) continue;
+    const savedEntry = annotationId
+      ? saved.find((entry) => entry.id === annotationId)
+      : undefined;
+    entries.push({
+      key: uid,
+      author: savedEntry?.author || userContext.displayName,
+      text: popup.contents,
+      page: (typeof value.pageIndex === 'number' ? value.pageIndex : 0) + 1,
+      rect: Array.isArray(value.rect) ? (value.rect as number[]) : undefined,
+    });
+  }
+
+  for (const entry of saved) {
+    if (removedIds.has(entry.id) || overriddenIds.has(entry.id)) continue;
+    entries.push({
+      key: `saved-${entry.id}`,
+      author: entry.author,
+      text: entry.text,
+      page: entry.page,
+      rect: entry.rect,
+      dateLabel: entry.dateLabel,
+    });
+  }
+
+  entries.sort((a, b) => a.page - b.page || (b.rect?.[3] ?? 0) - (a.rect?.[3] ?? 0));
+  return entries;
+}
+
+async function refreshSidebar(): Promise<void> {
+  try {
+    sidebarComments.value = await collectComments();
+  } catch (collectError) {
+    console.error(collectError);
+  }
+}
+
+function toggleSidebar(): void {
+  sidebarOpen.value = !sidebarOpen.value;
+  if (sidebarOpen.value) void refreshSidebar();
+}
+
+function goToComment(entry: CommentEntry): void {
+  const pdfViewer = viewer.value;
+  if (!pdfViewer || !pdfLoaded.value) return;
+  if (entry.rect && entry.rect.length === 4) {
+    pdfViewer.scrollPageIntoView({
+      pageNumber: entry.page,
+      destArray: [null, {name: 'XYZ'}, entry.rect[0] - 24, entry.rect[3] + 24, null],
+    });
+  } else {
+    pdfViewer.currentPageNumber = entry.page;
+  }
+}
+
 function scheduleCommit(): void {
+  if (sidebarOpen.value) void refreshSidebar();
   if (props.isReadOnly) return;
   pendingCommit.value = true;
   window.clearTimeout(commitTimer);
@@ -990,6 +1167,9 @@ onBeforeUnmount(() => {
 .icon-about {
   --tb-icon: var(--tbi-about);
 }
+.icon-comments {
+  --tb-icon: var(--tbi-comments);
+}
 
 .tb-btn:hover:enabled {
   background: var(--button-hover);
@@ -1074,11 +1254,99 @@ onBeforeUnmount(() => {
   min-height: 0;
 }
 
+/* PDFViewer requires an absolutely positioned container; the sidebar
+   reserves its space via the container's inline-end inset. */
 .viewer-scroll {
   position: absolute;
   inset: 0;
   overflow: auto;
   background: var(--body-bg);
+}
+
+.viewer-region.with-sidebar .viewer-scroll {
+  inset-inline-end: 300px;
+}
+
+.pdfa-comments-sidebar {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  width: 300px;
+  overflow-y: auto;
+  border-left: 1px solid var(--toolbar-border);
+  background: var(--toolbar-bg);
+  color: var(--toolbar-text);
+  font-size: 13px;
+}
+
+.pdfa-comments-header {
+  position: sticky;
+  top: 0;
+  padding: 10px 12px;
+  background: var(--toolbar-bg);
+  border-bottom: 1px solid var(--separator);
+  font-weight: 600;
+}
+
+.pdfa-comments-empty {
+  margin: 0;
+  padding: 12px;
+  color: var(--toolbar-muted);
+}
+
+.pdfa-comments-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pdfa-comment-entry {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--separator);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.pdfa-comment-entry:hover {
+  background: var(--button-hover);
+}
+
+.pdfa-comment-entry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.pdfa-comment-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pdfa-comment-meta > span {
+  color: var(--toolbar-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pdfa-comment-date {
+  display: block;
+  margin-top: 1px;
+  color: var(--toolbar-muted);
+  font-size: 11px;
+}
+
+.pdfa-comment-body {
+  display: block;
+  margin-top: 4px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 
 .error-banner {

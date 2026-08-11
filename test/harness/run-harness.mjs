@@ -144,6 +144,28 @@ try {
     'about dialog should close again',
   );
 
+  // 8. The comment sidebar summarizes the document's comments.
+  await page.click('button[title="Kommentare"]');
+  await page.waitForSelector('.pdfa-comments-sidebar', {timeout: 5000});
+  await page.waitForTimeout(500);
+  const sidebarText = await page.textContent('.pdfa-comments-sidebar');
+  check(
+    sidebarText?.includes('Bitte bis Freitag prüfen'),
+    `comment sidebar should list the ink comment, got "${sidebarText}"`,
+  );
+  check(
+    sidebarText?.includes('Seite 1'),
+    `comment sidebar should show the page number, got "${sidebarText}"`,
+  );
+  await page.click('.pdfa-comment-entry');
+  await page.waitForTimeout(300);
+  await page.click('button[title="Kommentare"]');
+  await page.waitForTimeout(200);
+  check(
+    (await page.locator('.pdfa-comments-sidebar').count()) === 0,
+    'comment sidebar should close again',
+  );
+
   const errors = await page.evaluate(() => window.__harness.errors);
   check(errors.length === 0, `page errors: ${errors.join(' | ')}`);
 } catch (error) {
@@ -154,7 +176,7 @@ if (problems.length) {
   console.error(`✗ pdf-annotator harness\n  ${problems.join('\n  ')}`);
   console.error(consoleLines.join('\n'));
 } else {
-  console.log('✓ pdf-annotator harness: render, annotate, comment, emit, verify, zoom, about');
+  console.log('✓ pdf-annotator harness: render, annotate, comment, emit, verify, zoom, about, sidebar');
 }
 
 await browser.close();
