@@ -148,7 +148,7 @@ try {
   await page.click('button[title="Werkzeuge"]');
   await page.waitForSelector('.pdfa-menu', {timeout: 5000});
   const menuText = await page.textContent('.pdfa-menu');
-  for (const item of ['Letzte Seite anzeigen', 'Hand-Werkzeug', 'Kombinierte Seitenanordnung', 'Dokumenteigenschaften']) {
+  for (const item of ['Letzte Seite anzeigen', 'Hand-Werkzeug', 'Kombinierte Seitenanordnung', 'Drucken', 'Dokumenteigenschaften']) {
     check(menuText?.includes(item), `secondary menu should offer "${item}"`);
   }
 

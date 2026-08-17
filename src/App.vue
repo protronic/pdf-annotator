@@ -363,6 +363,10 @@
           <span class="pdfa-menu-icon mi-spread-even" aria-hidden="true" />Gerade + ungerade Seite
         </button>
         <div class="pdfa-menu-divider" />
+        <button type="button" role="menuitem" :disabled="!pdfLoaded" @click="printDocument">
+          <span class="pdfa-menu-icon mi-print" aria-hidden="true" />Drucken…
+        </button>
+        <div class="pdfa-menu-divider" />
         <button type="button" role="menuitem" @click="openDocProps">
           <span class="pdfa-menu-icon mi-doc-props" aria-hidden="true" />Dokumenteigenschaften…
         </button>
@@ -501,6 +505,7 @@ import iconSpreadNone from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-
 import iconSpreadOdd from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-spreadOdd.svg?url';
 import iconSpreadEven from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-spreadEven.svg?url';
 import iconDocProps from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-documentProperties.svg?url';
+import iconPrint from 'pdfjs-dist/legacy/web/images/toolbarButton-print.svg?url';
 
 // The original pdf.js icon set ships with pdfjs-dist; the files are small
 // enough for Vite to inline them as data URIs (Module-Federation-safe).
@@ -551,6 +556,7 @@ const iconVars = {
   '--mi-spread-odd': `url("${iconSpreadOdd}")`,
   '--mi-spread-even': `url("${iconSpreadEven}")`,
   '--mi-doc-props': `url("${iconDocProps}")`,
+  '--mi-print': `url("${iconPrint}")`,
   '--tbi-freetext': `url("${iconFreeText}")`,
   '--tbi-highlight': `url("${iconHighlight}")`,
   '--tbi-ink': `url("${iconInk}")`,
@@ -1050,6 +1056,54 @@ async function openDocProps(): Promise<void> {
   docPropsOpen.value = true;
 }
 
+// --- Printing ----------------------------------------------------------------
+
+let printFrame: HTMLIFrameElement | null = null;
+let printUrl = '';
+
+function destroyPrintFrame(): void {
+  printFrame?.remove();
+  printFrame = null;
+  if (printUrl) {
+    URL.revokeObjectURL(printUrl);
+    printUrl = '';
+  }
+}
+
+/**
+ * Prints the document including the current annotation state: the bytes
+ * from saveDocument() are handed to the browser's native PDF renderer in a
+ * hidden same-origin frame (the instance CSP allows frame-src blob:).
+ */
+async function printDocument(): Promise<void> {
+  closeMenu();
+  const doc = pdfDocument;
+  if (!doc || !pdfLoaded.value) return;
+  try {
+    const bytes = await doc.saveDocument();
+    destroyPrintFrame();
+    printUrl = URL.createObjectURL(new Blob([bytes as BlobPart], {type: 'application/pdf'}));
+    const frame = document.createElement('iframe');
+    frame.style.cssText = 'position:fixed;inset-inline-end:0;bottom:0;width:1px;height:1px;border:0;';
+    frame.title = 'Drucken';
+    frame.src = printUrl;
+    frame.addEventListener('load', () => {
+      try {
+        frame.contentWindow?.focus();
+        frame.contentWindow?.print();
+      } catch {
+        window.open(printUrl, '_blank');
+      }
+    });
+    document.body.append(frame);
+    printFrame = frame;
+  } catch (printError) {
+    error.value = `Drucken fehlgeschlagen: ${
+      printError instanceof Error ? printError.message : String(printError)
+    }`;
+  }
+}
+
 // --- Explicit save to OpenCloud ---------------------------------------------
 
 async function saveToOpenCloud(): Promise<void> {
@@ -1529,6 +1583,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  destroyPrintFrame();
   window.removeEventListener('keydown', onWindowKeydown, true);
   containerElement.value?.removeEventListener('wheel', onViewerWheel);
   window.clearTimeout(commitTimer);
@@ -2058,6 +2113,9 @@ onBeforeUnmount(() => {
 }
 .mi-doc-props {
   --mi-icon: var(--mi-doc-props);
+}
+.mi-print {
+  --mi-icon: var(--mi-print);
 }
 .mi-about {
   --mi-icon: var(--mi-about);
