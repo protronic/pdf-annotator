@@ -1,6 +1,33 @@
 <template>
   <div class="pdf-annotator" :style="iconVars">
     <header class="toolbar">
+      <div class="toolbar-group">
+        <button
+          type="button"
+          class="tb-btn"
+          :class="{toggled: outlineOpen}"
+          title="Dokumentstruktur"
+          aria-label="Dokumentstruktur"
+          :disabled="!pdfLoaded"
+          @click="outlineOpen = !outlineOpen"
+        >
+          <span class="tb-icon icon-outline" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          class="tb-btn"
+          :class="{toggled: findOpen}"
+          title="Suchen"
+          aria-label="Suchen"
+          :disabled="!pdfLoaded"
+          @click="toggleFind"
+        >
+          <span class="tb-icon icon-search" aria-hidden="true" />
+        </button>
+      </div>
+
+      <span class="separator" aria-hidden="true" />
+
       <div class="toolbar-group" aria-label="Seitennavigation">
         <button
           type="button"
@@ -36,7 +63,7 @@
         <span class="page-count">von {{ pageCount }}</span>
       </div>
 
-      <span class="separator" aria-hidden="true" />
+      <span class="spacer" />
 
       <div class="toolbar-group" aria-label="Zoom">
         <button
@@ -156,19 +183,213 @@
         <span class="tb-icon icon-comments" aria-hidden="true" />
       </button>
       <button
+        v-if="!isReadOnly"
         type="button"
         class="tb-btn"
-        title="Über PDF Annotator"
-        aria-label="Über PDF Annotator"
-        @click="aboutOpen = true"
+        title="In OpenCloud speichern"
+        aria-label="In OpenCloud speichern"
+        :disabled="!pdfLoaded || saving"
+        @click="saveToOpenCloud"
       >
-        <span class="tb-icon icon-about" aria-hidden="true" />
+        <span class="tb-icon icon-save" aria-hidden="true" />
+      </button>
+      <button
+        type="button"
+        class="tb-btn"
+        :class="{toggled: menuOpen}"
+        title="Werkzeuge"
+        aria-label="Werkzeuge"
+        @click="menuOpen = !menuOpen"
+      >
+        <span class="tb-icon icon-menu" aria-hidden="true" />
       </button>
     </header>
 
-    <main ref="regionElement" class="viewer-region" :class="{'with-sidebar': sidebarOpen}">
-      <div ref="containerElement" class="viewer-scroll">
+    <main
+      ref="regionElement"
+      class="viewer-region"
+      :class="{'with-sidebar': sidebarOpen, 'with-outline': outlineOpen}"
+    >
+      <div
+        ref="containerElement"
+        class="viewer-scroll"
+        :class="{'hand-tool': handTool}"
+      >
         <div ref="viewerElement" class="pdfViewer" />
+      </div>
+      <div v-if="findOpen" class="pdfa-findbar">
+        <input
+          ref="findInputElement"
+          v-model="findQuery"
+          class="pdfa-find-input"
+          type="text"
+          placeholder="Im Dokument suchen …"
+          aria-label="Suchen"
+          @input="onFindInput"
+          @keydown.enter="findAgain($event.shiftKey)"
+        />
+        <button
+          type="button"
+          class="tb-btn"
+          title="Vorheriger Treffer"
+          aria-label="Vorheriger Treffer"
+          @click="findAgain(true)"
+        >
+          <span class="tb-icon icon-find-prev" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          class="tb-btn"
+          title="Nächster Treffer"
+          aria-label="Nächster Treffer"
+          @click="findAgain(false)"
+        >
+          <span class="tb-icon icon-find-next" aria-hidden="true" />
+        </button>
+        <span v-if="findMatches && findQuery" class="pdfa-find-count">
+          {{ findMatches.total ? `${findMatches.current} von ${findMatches.total}` : 'Keine Treffer' }}
+        </span>
+      </div>
+      <aside v-if="outlineOpen" class="pdfa-outline" aria-label="Dokumentstruktur">
+        <div class="pdfa-comments-header">Dokumentstruktur</div>
+        <p v-if="!outlineItems.length" class="pdfa-comments-empty">
+          Keine Dokumentstruktur vorhanden.
+        </p>
+        <ul v-else class="pdfa-outline-list">
+          <li v-for="(item, index) in outlineItems" :key="index">
+            <button
+              type="button"
+              class="pdfa-outline-entry"
+              :style="{paddingInlineStart: `${12 + item.depth * 14}px`}"
+              @click="goToOutlineItem(item.dest)"
+            >
+              {{ item.title }}
+            </button>
+          </li>
+        </ul>
+      </aside>
+      <div v-if="menuOpen" class="pdfa-menu-backdrop" @pointerdown.self="closeMenu" />
+      <div v-if="menuOpen" class="pdfa-menu" role="menu">
+        <button type="button" role="menuitem" :disabled="currentPage <= 1" @click="goFirstPage">
+          <span class="pdfa-menu-icon mi-first-page" aria-hidden="true" />Erste Seite anzeigen
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          :disabled="currentPage >= pageCount"
+          @click="goLastPage"
+        >
+          <span class="pdfa-menu-icon mi-last-page" aria-hidden="true" />Letzte Seite anzeigen
+        </button>
+        <div class="pdfa-menu-divider" />
+        <button type="button" role="menuitem" @click="rotatePages(90)">
+          <span class="pdfa-menu-icon mi-rotate-cw" aria-hidden="true" />Im Uhrzeigersinn drehen
+        </button>
+        <button type="button" role="menuitem" @click="rotatePages(-90)">
+          <span class="pdfa-menu-icon mi-rotate-ccw" aria-hidden="true" />Gegen den Uhrzeigersinn
+          drehen
+        </button>
+        <div class="pdfa-menu-divider" />
+        <button
+          type="button"
+          role="menuitem"
+          :class="{active: !handTool}"
+          @click="setHandTool(false)"
+        >
+          <span class="pdfa-menu-icon mi-select-tool" aria-hidden="true" />Textauswahl-Werkzeug
+        </button>
+        <button type="button" role="menuitem" :class="{active: handTool}" @click="setHandTool(true)">
+          <span class="pdfa-menu-icon mi-hand-tool" aria-hidden="true" />Hand-Werkzeug
+        </button>
+        <div class="pdfa-menu-divider" />
+        <button
+          type="button"
+          role="menuitem"
+          :class="{active: scrollModeState === ScrollMode.PAGE}"
+          @click="setScrollMode(ScrollMode.PAGE)"
+        >
+          <span class="pdfa-menu-icon mi-scroll-page" aria-hidden="true" />Einzelseitenanordnung
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          :class="{active: scrollModeState === ScrollMode.VERTICAL}"
+          @click="setScrollMode(ScrollMode.VERTICAL)"
+        >
+          <span class="pdfa-menu-icon mi-scroll-vertical" aria-hidden="true" />Vertikale
+          Seitenanordnung
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          :class="{active: scrollModeState === ScrollMode.HORIZONTAL}"
+          @click="setScrollMode(ScrollMode.HORIZONTAL)"
+        >
+          <span class="pdfa-menu-icon mi-scroll-horizontal" aria-hidden="true" />Horizontale
+          Seitenanordnung
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          :class="{active: scrollModeState === ScrollMode.WRAPPED}"
+          @click="setScrollMode(ScrollMode.WRAPPED)"
+        >
+          <span class="pdfa-menu-icon mi-scroll-wrapped" aria-hidden="true" />Kombinierte
+          Seitenanordnung
+        </button>
+        <div class="pdfa-menu-divider" />
+        <button
+          type="button"
+          role="menuitem"
+          :class="{active: spreadModeState === SpreadMode.NONE}"
+          @click="setSpreadMode(SpreadMode.NONE)"
+        >
+          <span class="pdfa-menu-icon mi-spread-none" aria-hidden="true" />Einzelne Seiten
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          :class="{active: spreadModeState === SpreadMode.ODD}"
+          @click="setSpreadMode(SpreadMode.ODD)"
+        >
+          <span class="pdfa-menu-icon mi-spread-odd" aria-hidden="true" />Ungerade + gerade Seite
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          :class="{active: spreadModeState === SpreadMode.EVEN}"
+          @click="setSpreadMode(SpreadMode.EVEN)"
+        >
+          <span class="pdfa-menu-icon mi-spread-even" aria-hidden="true" />Gerade + ungerade Seite
+        </button>
+        <div class="pdfa-menu-divider" />
+        <button type="button" role="menuitem" @click="openDocProps">
+          <span class="pdfa-menu-icon mi-doc-props" aria-hidden="true" />Dokumenteigenschaften…
+        </button>
+        <button type="button" role="menuitem" @click="((aboutOpen = true), closeMenu())">
+          <span class="pdfa-menu-icon mi-about" aria-hidden="true" />Über PDF Annotator
+        </button>
+      </div>
+      <div
+        v-if="docPropsOpen"
+        class="pdfa-about-backdrop"
+        @pointerdown.self="docPropsOpen = false"
+      >
+        <div class="pdfa-about-dialog" role="dialog" aria-label="Dokumenteigenschaften">
+          <h2 class="pdfa-about-title">Dokumenteigenschaften</h2>
+          <dl class="pdfa-about-rows">
+            <template v-for="row in docProps" :key="row.label">
+              <dt>{{ row.label }}</dt>
+              <dd>{{ row.value }}</dd>
+            </template>
+          </dl>
+          <div class="pdfa-about-actions">
+            <span class="pdfa-comment-spacer" />
+            <button type="button" class="pdfa-about-close" @click="docPropsOpen = false">
+              Schließen
+            </button>
+          </div>
+        </div>
       </div>
       <aside v-if="sidebarOpen" class="pdfa-comments-sidebar" aria-label="Kommentare">
         <div class="pdfa-comments-header">Kommentare ({{ sidebarComments.length }})</div>
@@ -235,7 +456,15 @@ import {
   type PDFDocumentLoadingTask,
   type PDFDocumentProxy,
 } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import {EventBus, GenericL10n, PDFLinkService, PDFViewer} from 'pdfjs-dist/legacy/web/pdf_viewer.mjs';
+import {
+  EventBus,
+  GenericL10n,
+  PDFFindController,
+  PDFLinkService,
+  PDFViewer,
+  ScrollMode,
+  SpreadMode,
+} from 'pdfjs-dist/legacy/web/pdf_viewer.mjs';
 import PdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?worker&inline';
 import 'pdfjs-dist/legacy/web/pdf_viewer.css';
 import type {Resource} from '@opencloud-eu/web-client';
@@ -253,6 +482,25 @@ import iconPageDown from 'pdfjs-dist/legacy/web/images/toolbarButton-pageDown.sv
 import iconPageUp from 'pdfjs-dist/legacy/web/images/toolbarButton-pageUp.svg?url';
 import iconZoomIn from 'pdfjs-dist/legacy/web/images/toolbarButton-zoomIn.svg?url';
 import iconZoomOut from 'pdfjs-dist/legacy/web/images/toolbarButton-zoomOut.svg?url';
+import iconSave from 'pdfjs-dist/legacy/web/images/toolbarButton-download.svg?url';
+import iconSearch from 'pdfjs-dist/legacy/web/images/toolbarButton-search.svg?url';
+import iconMenuToggle from 'pdfjs-dist/legacy/web/images/toolbarButton-secondaryToolbarToggle.svg?url';
+import iconOutline from 'pdfjs-dist/legacy/web/images/toolbarButton-viewOutline.svg?url';
+import iconFindNext from 'pdfjs-dist/legacy/web/images/findbarButton-next.svg?url';
+import iconFindPrev from 'pdfjs-dist/legacy/web/images/findbarButton-previous.svg?url';
+import iconFirstPage from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-firstPage.svg?url';
+import iconLastPage from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-lastPage.svg?url';
+import iconRotateCw from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-rotateCw.svg?url';
+import iconRotateCcw from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-rotateCcw.svg?url';
+import iconHandTool from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-handTool.svg?url';
+import iconScrollPage from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-scrollPage.svg?url';
+import iconScrollVertical from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-scrollVertical.svg?url';
+import iconScrollHorizontal from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-scrollHorizontal.svg?url';
+import iconScrollWrapped from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-scrollWrapped.svg?url';
+import iconSpreadNone from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-spreadNone.svg?url';
+import iconSpreadOdd from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-spreadOdd.svg?url';
+import iconSpreadEven from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-spreadEven.svg?url';
+import iconDocProps from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-documentProperties.svg?url';
 
 // The original pdf.js icon set ships with pdfjs-dist; the files are small
 // enough for Vite to inline them as data URIs (Module-Federation-safe).
@@ -282,6 +530,27 @@ const iconVars = {
   '--tbi-select': `url("${iconSelect}")`,
   '--tbi-about': `url("data:image/svg+xml,${encodeURIComponent(aboutIconSvg)}")`,
   '--tbi-comments': `url("${iconCommentEdit}")`,
+  '--mi-about': `url("data:image/svg+xml,${encodeURIComponent(aboutIconSvg)}")`,
+  '--tbi-save': `url("${iconSave}")`,
+  '--tbi-search': `url("${iconSearch}")`,
+  '--tbi-menu': `url("${iconMenuToggle}")`,
+  '--tbi-outline': `url("${iconOutline}")`,
+  '--tbi-find-next': `url("${iconFindNext}")`,
+  '--tbi-find-prev': `url("${iconFindPrev}")`,
+  '--mi-first-page': `url("${iconFirstPage}")`,
+  '--mi-last-page': `url("${iconLastPage}")`,
+  '--mi-rotate-cw': `url("${iconRotateCw}")`,
+  '--mi-rotate-ccw': `url("${iconRotateCcw}")`,
+  '--mi-select-tool': `url("${iconSelect}")`,
+  '--mi-hand-tool': `url("${iconHandTool}")`,
+  '--mi-scroll-page': `url("${iconScrollPage}")`,
+  '--mi-scroll-vertical': `url("${iconScrollVertical}")`,
+  '--mi-scroll-horizontal': `url("${iconScrollHorizontal}")`,
+  '--mi-scroll-wrapped': `url("${iconScrollWrapped}")`,
+  '--mi-spread-none': `url("${iconSpreadNone}")`,
+  '--mi-spread-odd': `url("${iconSpreadOdd}")`,
+  '--mi-spread-even': `url("${iconSpreadEven}")`,
+  '--mi-doc-props': `url("${iconDocProps}")`,
   '--tbi-freetext': `url("${iconFreeText}")`,
   '--tbi-highlight': `url("${iconHighlight}")`,
   '--tbi-ink': `url("${iconInk}")`,
@@ -326,6 +595,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (event: 'update:currentContent', value: ArrayBuffer): void;
+  (event: 'save'): void;
 }>();
 
 const modes = {
@@ -337,17 +607,18 @@ const modes = {
 } as const;
 
 const zoomPresets = [
-  {value: 'auto', label: 'Automatisch'},
+  {value: 'auto', label: 'Automatischer Zoom'},
+  {value: 'page-actual', label: 'Originalgröße'},
   {value: 'page-fit', label: 'Seitengröße'},
   {value: 'page-width', label: 'Seitenbreite'},
-  {value: '0.5', label: '50 %'},
-  {value: '0.75', label: '75 %'},
-  {value: '1', label: '100 %'},
-  {value: '1.25', label: '125 %'},
-  {value: '1.5', label: '150 %'},
-  {value: '2', label: '200 %'},
-  {value: '3', label: '300 %'},
-  {value: '4', label: '400 %'},
+  {value: '0.5', label: '50%'},
+  {value: '0.75', label: '75%'},
+  {value: '1', label: '100%'},
+  {value: '1.25', label: '125%'},
+  {value: '1.5', label: '150%'},
+  {value: '2', label: '200%'},
+  {value: '3', label: '300%'},
+  {value: '4', label: '400%'},
 ];
 
 const regionElement = ref<HTMLElement>();
@@ -363,6 +634,18 @@ const pdfLoaded = ref(false);
 const aboutOpen = ref(false);
 const sidebarOpen = ref(false);
 const sidebarComments = ref<CommentEntry[]>([]);
+const menuOpen = ref(false);
+const findOpen = ref(false);
+const findQuery = ref('');
+const findMatches = ref<{current: number; total: number} | null>(null);
+const findInputElement = ref<HTMLInputElement>();
+const outlineOpen = ref(false);
+const outlineItems = ref<Array<{title: string; dest: unknown; depth: number}>>([]);
+const docPropsOpen = ref(false);
+const docProps = ref<Array<{label: string; value: string}>>([]);
+const handTool = ref(false);
+const scrollModeState = ref<number>(ScrollMode.VERTICAL);
+const spreadModeState = ref<number>(SpreadMode.NONE);
 const saving = ref(false);
 const pendingCommit = ref(false);
 const error = ref('');
@@ -577,6 +860,7 @@ async function loadDocumentFrom(source: ContentValue): Promise<void> {
     lastAppliedContent = source;
     pendingCommit.value = false;
     pdfLoaded.value = true;
+    void loadOutline();
     editorMode.value = modes.NONE;
   } catch (loadError) {
     if (token !== loadToken) return;
@@ -597,6 +881,183 @@ function setMode(mode: number): void {
   }
 }
 
+
+// --- Search (pdf.js find controller) ---------------------------------------
+
+function dispatchFind(type: string, findPrevious = false): void {
+  eventBus?.dispatch('find', {
+    source: null,
+    type,
+    query: findQuery.value,
+    caseSensitive: false,
+    entireWord: false,
+    highlightAll: true,
+    findPrevious,
+    matchDiacritics: false,
+  });
+}
+
+function toggleFind(): void {
+  findOpen.value = !findOpen.value;
+  if (findOpen.value) {
+    requestAnimationFrame(() => findInputElement.value?.select());
+  } else {
+    findMatches.value = null;
+    eventBus?.dispatch('findbarclose', {source: null});
+  }
+}
+
+function onFindInput(): void {
+  dispatchFind('');
+}
+
+function findAgain(previous: boolean): void {
+  dispatchFind('again', previous);
+}
+
+// --- Document outline (Dokumentstruktur) -----------------------------------
+
+async function loadOutline(): Promise<void> {
+  outlineItems.value = [];
+  if (!pdfDocument) return;
+  type RawOutlineNode = {title: string; dest: unknown; items?: RawOutlineNode[]};
+  const outline = (await pdfDocument.getOutline().catch((): null => null)) as
+    | RawOutlineNode[]
+    | null;
+  if (!outline) return;
+  const flat: Array<{title: string; dest: unknown; depth: number}> = [];
+  const walk = (nodes: RawOutlineNode[], depth: number): void => {
+    for (const node of nodes) {
+      flat.push({title: node.title, dest: node.dest, depth});
+      if (node.items?.length && depth < 6) walk(node.items, depth + 1);
+    }
+  };
+  walk(outline, 0);
+  outlineItems.value = flat;
+}
+
+function goToOutlineItem(dest: unknown): void {
+  if (!dest || !linkService) return;
+  void linkService.goToDestination(dest as string);
+}
+
+// --- Secondary toolbar menu -------------------------------------------------
+
+function closeMenu(): void {
+  menuOpen.value = false;
+}
+
+function goFirstPage(): void {
+  if (viewer.value) viewer.value.currentPageNumber = 1;
+  closeMenu();
+}
+
+function goLastPage(): void {
+  if (viewer.value) viewer.value.currentPageNumber = pageCount.value || 1;
+  closeMenu();
+}
+
+function rotatePages(delta: number): void {
+  if (viewer.value) {
+    viewer.value.pagesRotation = (viewer.value.pagesRotation + delta + 360) % 360;
+  }
+  closeMenu();
+}
+
+function setHandTool(enabled: boolean): void {
+  handTool.value = enabled;
+  closeMenu();
+}
+
+function setScrollMode(mode: number): void {
+  if (viewer.value) viewer.value.scrollMode = mode;
+  scrollModeState.value = mode;
+  closeMenu();
+}
+
+function setSpreadMode(mode: number): void {
+  if (viewer.value) viewer.value.spreadMode = mode;
+  spreadModeState.value = mode;
+  closeMenu();
+}
+
+// --- Hand tool: drag to pan the scroll container ----------------------------
+
+let panPointer: {id: number; x: number; y: number; left: number; top: number} | null = null;
+
+function onPanPointerDown(event: PointerEvent): void {
+  if (!handTool.value || event.button !== 0) return;
+  const target = event.target as HTMLElement;
+  if (target.closest('.editToolbar, .annotationCommentButton, .pdfa-comment-dialog')) return;
+  const container = containerElement.value;
+  if (!container) return;
+  panPointer = {
+    id: event.pointerId,
+    x: event.clientX,
+    y: event.clientY,
+    left: container.scrollLeft,
+    top: container.scrollTop,
+  };
+  container.setPointerCapture(event.pointerId);
+  event.preventDefault();
+}
+
+function onPanPointerMove(event: PointerEvent): void {
+  const container = containerElement.value;
+  if (!panPointer || panPointer.id !== event.pointerId || !container) return;
+  container.scrollLeft = panPointer.left - (event.clientX - panPointer.x);
+  container.scrollTop = panPointer.top - (event.clientY - panPointer.y);
+}
+
+function onPanPointerUp(event: PointerEvent): void {
+  if (panPointer?.id === event.pointerId) panPointer = null;
+}
+
+// --- Document properties -----------------------------------------------------
+
+function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(0)} KB (${bytes.toLocaleString('de-DE')} Bytes)`;
+  return `${(kb / 1024).toFixed(2)} MB (${bytes.toLocaleString('de-DE')} Bytes)`;
+}
+
+async function openDocProps(): Promise<void> {
+  closeMenu();
+  const rows: Array<{label: string; value: string}> = [];
+  const push = (label: string, value: unknown): void => {
+    const text = typeof value === 'string' ? value.trim() : '';
+    if (text) rows.push({label, value: text});
+  };
+  push('Dateiname', props.resource?.name);
+  push('Dateigröße', formatFileSize(Number(props.resource?.size ?? 0)));
+  if (pdfDocument) {
+    const {info} = (await pdfDocument.getMetadata().catch(() => ({info: {}}))) as {
+      info: Record<string, unknown>;
+    };
+    push('Titel', info.Title);
+    push('Verfasser', info.Author);
+    push('Thema', info.Subject);
+    push('Stichwörter', info.Keywords);
+    push('Erstellt am', formatCommentDate(info.CreationDate));
+    push('Bearbeitet am', formatCommentDate(info.ModDate));
+    push('Anwendung', info.Creator);
+    push('PDF-Ersteller', info.Producer);
+    push('PDF-Version', info.PDFFormatVersion);
+    push('Seitenanzahl', String(pdfDocument.numPages));
+  }
+  docProps.value = rows;
+  docPropsOpen.value = true;
+}
+
+// --- Explicit save to OpenCloud ---------------------------------------------
+
+async function saveToOpenCloud(): Promise<void> {
+  if (props.isReadOnly || !pdfLoaded.value) return;
+  window.clearTimeout(commitTimer);
+  await commitAnnotations();
+  emit('save');
+}
 
 type CommentEntry = {
   key: string;
@@ -859,7 +1320,7 @@ function zoomOut(): void {
 function onZoomSelect(): void {
   if (!viewer.value || !pdfLoaded.value || zoomSelect.value === 'custom') return;
   const value = zoomSelect.value;
-  if (value === 'auto' || value === 'page-fit' || value === 'page-width') {
+  if (value === 'auto' || value === 'page-actual' || value === 'page-fit' || value === 'page-width') {
     viewer.value.currentScaleValue = value;
   } else {
     viewer.value.currentScale = Number.parseFloat(value);
@@ -877,7 +1338,17 @@ watch(
 );
 
 function onWindowKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape' && aboutOpen.value) {
+  if (event.key !== 'Escape') return;
+  if (menuOpen.value) {
+    event.stopPropagation();
+    menuOpen.value = false;
+  } else if (docPropsOpen.value) {
+    event.stopPropagation();
+    docPropsOpen.value = false;
+  } else if (findOpen.value) {
+    event.stopPropagation();
+    toggleFind();
+  } else if (aboutOpen.value) {
     event.stopPropagation();
     closeAbout();
   }
@@ -968,6 +1439,11 @@ onMounted(() => {
 
   eventBus = new EventBus();
   linkService = new PDFLinkService({eventBus});
+  const findController = new PDFFindController({
+    eventBus,
+    linkService,
+    updateMatchesCountOnProgress: true,
+  });
   commentManager = new PdfCommentManager({
     container: regionElement.value!,
     // Comment edits do not touch the annotation storage's modified flag,
@@ -979,6 +1455,7 @@ onMounted(() => {
     viewer: viewerElement.value!,
     eventBus,
     linkService,
+    findController,
     // Supported by the runtime (threaded through to the annotation editors
     // and layers); the shipped PDFViewerOptions typings lag behind.
     ...({commentManager} as object),
@@ -1007,6 +1484,23 @@ onMounted(() => {
   eventBus.on('pagechanging', ({pageNumber}: {pageNumber: number}) => {
     currentPage.value = pageNumber;
   });
+  eventBus.on(
+    'updatefindmatchescount',
+    ({matchesCount}: {matchesCount: {current: number; total: number}}) => {
+      findMatches.value = matchesCount;
+    },
+  );
+  eventBus.on(
+    'updatefindcontrolstate',
+    ({matchesCount}: {matchesCount: {current: number; total: number}}) => {
+      findMatches.value = matchesCount;
+    },
+  );
+  const scrollContainer = containerElement.value!;
+  scrollContainer.addEventListener('pointerdown', onPanPointerDown);
+  scrollContainer.addEventListener('pointermove', onPanPointerMove);
+  scrollContainer.addEventListener('pointerup', onPanPointerUp);
+  scrollContainer.addEventListener('pointercancel', onPanPointerUp);
   eventBus.on(
     'scalechanging',
     ({scale: newScale, presetValue}: {scale: number; presetValue?: string}) => {
@@ -1169,6 +1663,24 @@ onBeforeUnmount(() => {
 }
 .icon-comments {
   --tb-icon: var(--tbi-comments);
+}
+.icon-save {
+  --tb-icon: var(--tbi-save);
+}
+.icon-search {
+  --tb-icon: var(--tbi-search);
+}
+.icon-menu {
+  --tb-icon: var(--tbi-menu);
+}
+.icon-outline {
+  --tb-icon: var(--tbi-outline);
+}
+.icon-find-prev {
+  --tb-icon: var(--tbi-find-prev);
+}
+.icon-find-next {
+  --tb-icon: var(--tbi-find-next);
 }
 
 .tb-btn:hover:enabled {
@@ -1347,6 +1859,208 @@ onBeforeUnmount(() => {
   margin-top: 4px;
   white-space: pre-wrap;
   overflow-wrap: break-word;
+}
+
+.viewer-region.with-outline .viewer-scroll {
+  inset-inline-start: 260px;
+}
+
+.pdfa-outline {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: 260px;
+  overflow-y: auto;
+  border-right: 1px solid var(--toolbar-border);
+  background: var(--toolbar-bg);
+  color: var(--toolbar-text);
+  font-size: 13px;
+}
+
+.pdfa-outline-list {
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+}
+
+.pdfa-outline-entry {
+  display: block;
+  width: 100%;
+  padding: 5px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  overflow-wrap: break-word;
+}
+
+.pdfa-outline-entry:hover {
+  background: var(--button-hover);
+}
+
+.pdfa-findbar {
+  position: absolute;
+  top: 8px;
+  inset-inline-start: 8px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--toolbar-border);
+  border-radius: 6px;
+  background: var(--toolbar-bg);
+  color: var(--toolbar-text);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.pdfa-find-input {
+  width: 200px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--field-border);
+  border-radius: 4px;
+  background: var(--field-bg);
+  color: var(--toolbar-text);
+  font-size: 13px;
+}
+
+.pdfa-find-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.pdfa-find-count {
+  padding-inline: 6px;
+  color: var(--toolbar-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.viewer-scroll.hand-tool {
+  cursor: grab;
+  user-select: none;
+}
+
+.viewer-scroll.hand-tool:active {
+  cursor: grabbing;
+}
+
+.pdfa-menu-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 45;
+}
+
+.pdfa-menu {
+  position: absolute;
+  top: 4px;
+  inset-inline-end: 4px;
+  z-index: 46;
+  display: flex;
+  flex-direction: column;
+  min-width: 250px;
+  max-height: calc(100% - 16px);
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--toolbar-border);
+  border-radius: 6px;
+  background: var(--toolbar-bg);
+  color: var(--toolbar-text);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  font-size: 13px;
+}
+
+.pdfa-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pdfa-menu button:hover:enabled {
+  background: var(--button-hover);
+}
+
+.pdfa-menu button.active {
+  background: var(--toggled-bg);
+}
+
+.pdfa-menu button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pdfa-menu-divider {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--separator);
+}
+
+.pdfa-menu-icon {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  -webkit-mask: var(--mi-icon) center / contain no-repeat;
+  mask: var(--mi-icon) center / contain no-repeat;
+}
+
+.mi-first-page {
+  --mi-icon: var(--mi-first-page);
+}
+.mi-last-page {
+  --mi-icon: var(--mi-last-page);
+}
+.mi-rotate-cw {
+  --mi-icon: var(--mi-rotate-cw);
+}
+.mi-rotate-ccw {
+  --mi-icon: var(--mi-rotate-ccw);
+}
+.mi-select-tool {
+  --mi-icon: var(--mi-select-tool);
+}
+.mi-hand-tool {
+  --mi-icon: var(--mi-hand-tool);
+}
+.mi-scroll-page {
+  --mi-icon: var(--mi-scroll-page);
+}
+.mi-scroll-vertical {
+  --mi-icon: var(--mi-scroll-vertical);
+}
+.mi-scroll-horizontal {
+  --mi-icon: var(--mi-scroll-horizontal);
+}
+.mi-scroll-wrapped {
+  --mi-icon: var(--mi-scroll-wrapped);
+}
+.mi-spread-none {
+  --mi-icon: var(--mi-spread-none);
+}
+.mi-spread-odd {
+  --mi-icon: var(--mi-spread-odd);
+}
+.mi-spread-even {
+  --mi-icon: var(--mi-spread-even);
+}
+.mi-doc-props {
+  --mi-icon: var(--mi-doc-props);
+}
+.mi-about {
+  --mi-icon: var(--mi-about);
 }
 
 .error-banner {

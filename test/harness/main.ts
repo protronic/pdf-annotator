@@ -131,6 +131,9 @@ const Host = defineComponent({
         currentContent: currentContent.value,
         isReadOnly: false,
         resource,
+        onSave: () => {
+          window.__harness.saves += 1;
+        },
         'onUpdate:currentContent': (value: ArrayBuffer) => {
           // The real transport (axios) sends `view.buffer` for typed-array
           // bodies, which corrupts the file when the view is narrower than

@@ -35,8 +35,8 @@ try {
   const initialZoom = await page.inputValue('.zoom-select');
   check(initialZoom === 'auto', `initial zoom should be "auto", got "${initialZoom}"`);
   check(
-    (await page.locator('.save-button').count()) === 0,
-    'toolbar must not contain a save button (OpenCloud top bar saves)',
+    (await page.locator('button[title="In OpenCloud speichern"]').count()) === 1,
+    'toolbar should contain the OpenCloud save button',
   );
 
   // 2. Add a FreeText note via toolbar + click + keyboard.
@@ -129,8 +129,31 @@ try {
     `ctrl+wheel should zoom in (custom scale), zoom select shows "${wheelZoom}"`,
   );
 
-  // 7. The about dialog surfaces the injected build metadata.
-  await page.click('button[title="Über PDF Annotator"]');
+  // 6c. The explicit save button commits and triggers the wrapper save.
+  await page.click('button[title="In OpenCloud speichern"]');
+  await page.waitForFunction(() => window.__harness.saves > 0, null, {timeout: 10000});
+
+  // 6d. The search bar finds text across pages.
+  await page.click('button[title="Suchen"]');
+  await page.waitForSelector('.pdfa-find-input', {timeout: 5000});
+  await page.fill('.pdfa-find-input', 'Testseite');
+  await page.waitForFunction(
+    () => document.querySelector('.pdfa-find-count')?.textContent?.includes('von 2'),
+    null,
+    {timeout: 10000},
+  );
+  await page.click('button[title="Suchen"]');
+
+  // 6e. The secondary menu offers the original viewer tools.
+  await page.click('button[title="Werkzeuge"]');
+  await page.waitForSelector('.pdfa-menu', {timeout: 5000});
+  const menuText = await page.textContent('.pdfa-menu');
+  for (const item of ['Letzte Seite anzeigen', 'Hand-Werkzeug', 'Kombinierte Seitenanordnung', 'Dokumenteigenschaften']) {
+    check(menuText?.includes(item), `secondary menu should offer "${item}"`);
+  }
+
+  // 7. The about dialog surfaces the injected build metadata (via the menu).
+  await page.click('.pdfa-menu >> text=Über PDF Annotator');
   await page.waitForSelector('.pdfa-about-dialog', {timeout: 5000});
   const aboutText = await page.textContent('.pdfa-about-dialog');
   check(
@@ -176,7 +199,7 @@ if (problems.length) {
   console.error(`✗ pdf-annotator harness\n  ${problems.join('\n  ')}`);
   console.error(consoleLines.join('\n'));
 } else {
-  console.log('✓ pdf-annotator harness: render, annotate, comment, emit, verify, zoom, about, sidebar');
+  console.log('✓ pdf-annotator harness: render, annotate, comment, emit, verify, zoom, save, find, menu, about, sidebar');
 }
 
 await browser.close();
