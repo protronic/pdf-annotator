@@ -164,6 +164,10 @@ try {
     aboutText?.includes('Git-Commit') && !aboutText.includes('unbekannt'),
     `about dialog should show a git commit, got "${aboutText}"`,
   );
+  check(
+    aboutText?.includes('Harness User'),
+    `about dialog should show the detected user, got "${aboutText}"`,
+  );
   await page.click('.pdfa-about-close');
   await page.waitForTimeout(200);
   check(

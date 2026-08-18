@@ -426,6 +426,8 @@
             <dd>{{ aboutInfo.buildTime }}</dd>
             <dt>pdf.js</dt>
             <dd>{{ aboutInfo.pdfjsVersion }}</dd>
+            <dt>Benutzer</dt>
+            <dd>{{ currentAuthor || '–' }}</dd>
           </dl>
           <textarea
             v-if="diagnostics"
@@ -684,6 +686,7 @@ const aboutInfo = {
 };
 
 const diagnostics = ref('');
+const currentAuthor = computed(() => annotationAuthor());
 
 function closeAbout(): void {
   aboutOpen.value = false;
@@ -789,6 +792,7 @@ function runDiagnostics(): void {
   });
   const report = {
     commit: aboutInfo.commit,
+    user: annotationAuthor(),
     pdfjs: pdfjsVersion,
     userAgent: navigator.userAgent,
     viewport: {w: window.innerWidth, h: window.innerHeight},
