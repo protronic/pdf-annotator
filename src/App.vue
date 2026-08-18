@@ -474,7 +474,7 @@ import 'pdfjs-dist/legacy/web/pdf_viewer.css';
 import type {Resource} from '@opencloud-eu/web-client';
 import {computed, onBeforeUnmount, onMounted, ref, shallowRef, watch} from 'vue';
 import {PdfCommentManager} from './commentManager';
-import {userContext} from './userContext';
+import {annotationAuthor} from './userContext';
 import iconCommentEdit from 'pdfjs-dist/legacy/web/images/comment-editButton.svg?url';
 import iconEditorDelete from 'pdfjs-dist/legacy/web/images/editor-toolbar-delete.svg?url';
 import iconSelect from 'pdfjs-dist/legacy/web/images/secondaryToolbarButton-selectTool.svg?url';
@@ -1139,8 +1139,7 @@ function formatCommentDate(value: unknown): string {
  * Collects a summary of every comment in the document: comments stored in
  * the PDF (author from the annotation's /T field) plus not-yet-saved
  * comment edits from this session, attributed to the signed-in OpenCloud
- * user. pdf.js does not persist an author for annotations it creates, so
- * entries saved by this app show up without an author after reopening.
+ * user. New annotations get that user written to /T on save.
  */
 async function collectComments(): Promise<CommentEntry[]> {
   const doc = pdfDocument;
@@ -1205,7 +1204,7 @@ async function collectComments(): Promise<CommentEntry[]> {
       : undefined;
     entries.push({
       key: uid,
-      author: savedEntry?.author || userContext.displayName,
+      author: savedEntry?.author || annotationAuthor(),
       text: popup.contents,
       page: (typeof value.pageIndex === 'number' ? value.pageIndex : 0) + 1,
       rect: Array.isArray(value.rect) ? (value.rect as number[]) : undefined,
@@ -1272,6 +1271,17 @@ function scheduleCommit(): void {
  * Comment deletes that go through `UIManager.deleteComment` also skip our
  * commentManager `onChanged` hook. Patch both paths.
  */
+function stampOpenCloudAuthor(
+  serializable: {map?: Map<string, Record<string, unknown>> | null} | null | undefined,
+): void {
+  const author = annotationAuthor();
+  if (!author || !serializable?.map) return;
+  for (const value of serializable.map.values()) {
+    if (!value || value.deleted || value.user) continue;
+    value.user = author;
+  }
+}
+
 function wireAnnotationAutosave(document: PDFDocumentProxy): void {
   const storage = document.annotationStorage as {
     onSetModified: (() => void) | null;
@@ -1284,6 +1294,26 @@ function wireAnnotationAutosave(document: PDFDocumentProxy): void {
     originalRemove(key);
     scheduleCommit();
   };
+
+  // pdf.js writes annotation /T from serialized `user`. Editors omit it,
+  // so stamp the OpenCloud user onto every annotation we persist.
+  const desc = Object.getOwnPropertyDescriptor(
+    Object.getPrototypeOf(storage),
+    'serializable',
+  );
+  if (desc?.get) {
+    Object.defineProperty(storage, 'serializable', {
+      configurable: true,
+      enumerable: desc.enumerable,
+      get() {
+        const result = desc.get!.call(storage) as {
+          map?: Map<string, Record<string, unknown>> | null;
+        };
+        stampOpenCloudAuthor(result);
+        return result;
+      },
+    });
+  }
 }
 
 function wireUiManagerAutosave(uiManager: {

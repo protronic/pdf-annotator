@@ -16,12 +16,21 @@ export default defineWebApplication({
     const routeName = 'pdf-annotator-file';
 
     try {
-      // Comments created in this session are attributed to the signed-in
-      // user in the comment summary sidebar.
+      // Written into each new/edited PDF annotation as /T (author).
       const {user} = useUserStore();
-      userContext.displayName = user?.displayName ?? '';
+      const record = user as {
+        displayName?: string;
+        onPremisesSamAccountName?: string;
+        userName?: string;
+        id?: string;
+      } | undefined;
+      userContext.displayName = record?.displayName ?? '';
+      userContext.userName = record?.onPremisesSamAccountName ?? record?.userName ?? '';
+      userContext.id = record?.id ?? '';
     } catch {
       userContext.displayName = '';
+      userContext.userName = '';
+      userContext.id = '';
     }
 
     const routes = [

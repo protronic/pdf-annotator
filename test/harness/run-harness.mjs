@@ -109,6 +109,10 @@ try {
     commented.annotationContents.some((entry) => entry.includes('Bitte bis Freitag prüfen')),
     `emitted PDF should carry the comment text, got [${commented.annotationContents.join(' | ')}]`,
   );
+  check(
+    commented.annotationAuthors.some((entry) => entry.includes('Harness User')),
+    `emitted PDF should store the OpenCloud user as /T, got [${commented.annotationAuthors.join(' | ')}]`,
+  );
 
   // 6. The pdf.js-style zoom select drives the viewer scale.
   await page.selectOption('.zoom-select', '1');
@@ -175,6 +179,10 @@ try {
   check(
     sidebarText?.includes('Bitte bis Freitag prüfen'),
     `comment sidebar should list the ink comment, got "${sidebarText}"`,
+  );
+  check(
+    sidebarText?.includes('Harness User'),
+    `comment sidebar should show the OpenCloud user, got "${sidebarText}"`,
   );
   check(
     sidebarText?.includes('Seite 1'),

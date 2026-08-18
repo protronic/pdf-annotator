@@ -2,6 +2,10 @@ import {getDocument} from 'pdfjs-dist/legacy/build/pdf.mjs';
 import {createApp, defineComponent, h, ref} from 'vue';
 import type {Resource} from '@opencloud-eu/web-client';
 import App from '../../src/App.vue';
+import {userContext} from '../../src/userContext';
+
+userContext.displayName = 'Harness User';
+userContext.userName = 'harness';
 
 type HarnessState = {
   emitted: Array<{length: number; head: number[]}>;
@@ -12,7 +16,12 @@ type HarnessState = {
 declare global {
   interface Window {
     __harness: HarnessState;
-    __verifyEmitted: () => Promise<{numPages: number; annotationSubtypes: string[]}>;
+    __verifyEmitted: () => Promise<{
+      numPages: number;
+      annotationSubtypes: string[];
+      annotationContents: string[];
+      annotationAuthors: string[];
+    }>;
     __loadPdf: (bytes: number[]) => void;
     __lastEmittedBytes: () => number[];
   }
@@ -95,6 +104,9 @@ window.__verifyEmitted = async () => {
     annotationSubtypes: annotations.map((entry: {subtype?: string}) => entry.subtype ?? '?'),
     annotationContents: annotations.map(
       (entry: {contentsObj?: {str?: string}}) => entry.contentsObj?.str ?? '',
+    ),
+    annotationAuthors: annotations.map(
+      (entry: {titleObj?: {str?: string}}) => entry.titleObj?.str ?? '',
     ),
   };
   await doc.destroy();
