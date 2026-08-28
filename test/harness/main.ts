@@ -96,7 +96,8 @@ let lastEmitted: ArrayBuffer | undefined;
 window.__verifyEmitted = async () => {
   if (!lastEmitted) throw new Error('no emitted content to verify');
   // Parse a copy: getDocument transfers the buffer to the worker.
-  const doc = await getDocument({data: new Uint8Array(lastEmitted).slice()}).promise;
+  const task = getDocument({data: new Uint8Array(lastEmitted).slice()});
+  const doc = await task.promise;
   const page = await doc.getPage(1);
   const annotations = await page.getAnnotations();
   const result = {
@@ -109,7 +110,8 @@ window.__verifyEmitted = async () => {
       (entry: {titleObj?: {str?: string}}) => entry.titleObj?.str ?? '',
     ),
   };
-  await doc.destroy();
+  // v6 removed PDFDocumentProxy.destroy(); the loading task owns it.
+  await task.destroy();
   return result;
 };
 

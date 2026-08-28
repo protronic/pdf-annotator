@@ -163,6 +163,17 @@
           >
             <span class="tb-icon icon-stamp" aria-hidden="true" />
           </button>
+          <button
+            type="button"
+            class="tb-btn"
+            :class="{toggled: editorMode === modes.SIGNATURE}"
+            title="Unterschrift hinzufügen"
+            aria-label="Unterschrift hinzufügen"
+            :disabled="!pdfLoaded"
+            @click="setMode(modes.SIGNATURE)"
+          >
+            <span class="tb-icon icon-signature" aria-hidden="true" />
+          </button>
         </div>
       </template>
       <template v-else>
@@ -366,6 +377,15 @@
         <button type="button" role="menuitem" :disabled="!pdfLoaded" @click="printDocument">
           <span class="pdfa-menu-icon mi-print" aria-hidden="true" />Drucken…
         </button>
+        <button
+          v-if="!isReadOnly"
+          type="button"
+          role="menuitem"
+          :disabled="!pdfLoaded"
+          @click="openPageManager"
+        >
+          <span class="pdfa-menu-icon mi-scroll-page" aria-hidden="true" />Seiten verwalten…
+        </button>
         <div class="pdfa-menu-divider" />
         <button type="button" role="menuitem" @click="openDocProps">
           <span class="pdfa-menu-icon mi-doc-props" aria-hidden="true" />Dokumenteigenschaften…
@@ -390,6 +410,66 @@
           <div class="pdfa-about-actions">
             <span class="pdfa-comment-spacer" />
             <button type="button" class="pdfa-about-close" @click="docPropsOpen = false">
+              Schließen
+            </button>
+          </div>
+        </div>
+      </div>
+      <div
+        v-if="pageManagerOpen"
+        class="pdfa-about-backdrop"
+        @pointerdown.self="pageManagerOpen = false"
+      >
+        <div class="pdfa-about-dialog pdfa-pages-dialog" role="dialog" aria-label="Seiten verwalten">
+          <h2 class="pdfa-about-title">Seiten verwalten</h2>
+          <div class="pdfa-pages-grid">
+            <label v-for="n in pageCount" :key="n" class="pdfa-pages-item">
+              <input v-model="pageChecks[n - 1]" type="checkbox" />
+              <span>{{ n }}</span>
+            </label>
+          </div>
+          <div class="pdfa-pages-actions">
+            <button
+              type="button"
+              class="pdfa-pages-btn pdfa-pages-delete"
+              :disabled="!selectedPages.length || selectedPages.length >= pageCount"
+              @click="deleteSelectedPages"
+            >
+              Löschen
+            </button>
+            <button
+              type="button"
+              class="pdfa-pages-btn pdfa-pages-duplicate"
+              :disabled="!selectedPages.length"
+              @click="duplicateSelectedPages"
+            >
+              Duplizieren
+            </button>
+            <span class="pdfa-pages-move">
+              <button
+                type="button"
+                class="pdfa-pages-btn pdfa-pages-move-btn"
+                :disabled="!selectedPages.length"
+                @click="moveSelectedPages"
+              >
+                Verschieben vor Seite
+              </button>
+              <input
+                v-model="moveTargetValue"
+                class="pdfa-pages-move-input"
+                type="text"
+                inputmode="numeric"
+                aria-label="Zielseite"
+              />
+            </span>
+          </div>
+          <p class="pdfa-pages-hint">
+            Änderungen wirken sofort in der Ansicht und werden beim Speichern in die Datei
+            übernommen.
+          </p>
+          <div class="pdfa-about-actions">
+            <span class="pdfa-comment-spacer" />
+            <button type="button" class="pdfa-about-close" @click="pageManagerOpen = false">
               Schließen
             </button>
           </div>
@@ -453,7 +533,11 @@
 </template>
 
 <script setup lang="ts">
+// Must evaluate before pdf_viewer.mjs: the 6.x components read the core
+// library from globalThis.pdfjsLib at module-evaluation time.
+import './pdfjsShim';
 import {
+  AnnotationEditorParamsType,
   AnnotationEditorType,
   getDocument,
   GlobalWorkerOptions,
@@ -476,6 +560,7 @@ import 'pdfjs-dist/legacy/web/pdf_viewer.css';
 import type {Resource} from '@opencloud-eu/web-client';
 import {computed, onBeforeUnmount, onMounted, ref, shallowRef, watch} from 'vue';
 import {PdfCommentManager} from './commentManager';
+import {PdfSignatureManager} from './signatureManager';
 import {annotationAuthor} from './userContext';
 import iconCommentEdit from 'pdfjs-dist/legacy/web/images/comment-editButton.svg?url';
 import iconEditorDelete from 'pdfjs-dist/legacy/web/images/editor-toolbar-delete.svg?url';
@@ -484,6 +569,7 @@ import iconFreeText from 'pdfjs-dist/legacy/web/images/toolbarButton-editorFreeT
 import iconHighlight from 'pdfjs-dist/legacy/web/images/toolbarButton-editorHighlight.svg?url';
 import iconInk from 'pdfjs-dist/legacy/web/images/toolbarButton-editorInk.svg?url';
 import iconStamp from 'pdfjs-dist/legacy/web/images/toolbarButton-editorStamp.svg?url';
+import iconSignature from 'pdfjs-dist/legacy/web/images/toolbarButton-editorSignature.svg?url';
 import iconPageDown from 'pdfjs-dist/legacy/web/images/toolbarButton-pageDown.svg?url';
 import iconPageUp from 'pdfjs-dist/legacy/web/images/toolbarButton-pageUp.svg?url';
 import iconZoomIn from 'pdfjs-dist/legacy/web/images/toolbarButton-zoomIn.svg?url';
@@ -563,6 +649,7 @@ const iconVars = {
   '--tbi-highlight': `url("${iconHighlight}")`,
   '--tbi-ink': `url("${iconInk}")`,
   '--tbi-stamp': `url("${iconStamp}")`,
+  '--tbi-signature': `url("${iconSignature}")`,
   '--tbi-page-up': `url("${iconPageUp}")`,
   '--tbi-page-down': `url("${iconPageDown}")`,
   '--tbi-zoom-in': `url("${iconZoomIn}")`,
@@ -612,6 +699,7 @@ const modes = {
   HIGHLIGHT: AnnotationEditorType.HIGHLIGHT,
   INK: AnnotationEditorType.INK,
   STAMP: AnnotationEditorType.STAMP,
+  SIGNATURE: AnnotationEditorType.SIGNATURE,
 } as const;
 
 const zoomPresets = [
@@ -668,6 +756,9 @@ let loadingTask: PDFDocumentLoadingTask | undefined;
 let pdfDocument: PDFDocumentProxy | undefined;
 let resizeObserver: ResizeObserver | undefined;
 let commentManager: PdfCommentManager | undefined;
+let signatureManager: PdfSignatureManager | undefined;
+let uiManagerRef: {updateParams: (type: number, value: unknown) => void} | undefined;
+let pendingCreateMode: number | null = null;
 let commitTimer = 0;
 let commitInFlight = false;
 let commitQueued = false;
@@ -839,6 +930,19 @@ function toBytes(value: ContentValue | undefined): Uint8Array {
   return new Uint8Array(0);
 }
 
+/**
+ * Directory URL (with the trailing slash pdf.js requires) for the runtime
+ * assets living next to the bundle. Built from a variable on purpose:
+ * Vite's static analysis rewrites literal `new URL('...', import.meta.url)`
+ * expressions as single-asset references and drops the directory slash.
+ */
+function pdfjsAssetDir(dir: string): string {
+  // The indirection over a variable keeps Vite from matching the syntactic
+  // `new URL(..., import.meta.url)` pattern.
+  const moduleUrl = import.meta.url;
+  return new URL(`../${dir}/`, moduleUrl).href;
+}
+
 async function loadDocumentFrom(source: ContentValue): Promise<void> {
   const token = ++loadToken;
   error.value = '';
@@ -850,11 +954,18 @@ async function loadDocumentFrom(source: ContentValue): Promise<void> {
   }
 
   // getDocument transfers the buffer to the worker, so hand over a copy.
-  const task = getDocument({data: bytes.slice()});
+  // wasmUrl/iccUrl point at the runtime assets copied next to the bundle
+  // (JBIG2/JPEG2000 decoders, ICC color engine); both are same-origin.
+  const task = getDocument({
+    data: bytes.slice(),
+    wasmUrl: pdfjsAssetDir('wasm'),
+    iccUrl: pdfjsAssetDir('iccs'),
+  });
   try {
     const document = await task.promise;
     if (token !== loadToken) {
-      void document.destroy();
+      // v6 removed PDFDocumentProxy.destroy(); the loading task owns it.
+      void task.destroy();
       return;
     }
     if (loadingTask && loadingTask !== task) {
@@ -884,6 +995,20 @@ async function loadDocumentFrom(source: ContentValue): Promise<void> {
 function setMode(mode: number): void {
   if (!viewer.value || !pdfLoaded.value || props.isReadOnly) return;
   try {
+    // Stamp and signature editors are not created by clicking the page
+    // (the layer ignores clicks in these modes); like the original viewer
+    // toolbar, entering the mode immediately creates the editor - which
+    // opens the file picker / the signature dialog.
+    if (mode === modes.STAMP || mode === modes.SIGNATURE) {
+      pendingCreateMode = mode;
+      if (editorMode.value === mode) {
+        // Mode unchanged: no annotationeditormodechanged will fire.
+        pendingCreateMode = null;
+        uiManagerRef?.updateParams(AnnotationEditorParamsType.CREATE, null);
+      }
+    } else {
+      pendingCreateMode = null;
+    }
     viewer.value.annotationEditorMode = {mode};
     editorMode.value = mode;
   } catch (modeError) {
@@ -1345,14 +1470,29 @@ async function commitAnnotations(): Promise<void> {
   commitInFlight = true;
   saving.value = true;
   try {
-    // Empty storage means "no pending editor changes" relative to the loaded
-    // document. pdf.js warns that saveDocument is the wrong API then and that
-    // getData should be used — which returns the base PDF (without any
-    // session-only annotations that were just deleted from storage).
-    const bytes =
-      pdfDocument.annotationStorage.size > 0
-        ? await pdfDocument.saveDocument()
-        : await pdfDocument.getData();
+    // With page edits (delete/move/duplicate) the document must be rebuilt
+    // through extractPages - saveDocument only appends an incremental update
+    // and knows nothing about the pages mapper. Otherwise: empty storage
+    // means "no pending editor changes" relative to the loaded document.
+    // pdf.js warns that saveDocument is the wrong API then and that getData
+    // should be used — which returns the base PDF (without any session-only
+    // annotations that were just deleted from storage).
+    const mapper = pagesMapper();
+    let bytes: Uint8Array;
+    if (mapper?.hasBeenAltered()) {
+      const rebuilt = (await (
+        pdfDocument as unknown as {
+          extractPages: (pageInfos: unknown) => Promise<Uint8Array | null>;
+        }
+      ).extractPages(mapper.getPageMappingForSaving())) as Uint8Array | null;
+      if (!rebuilt) throw new Error('extractPages lieferte kein Dokument');
+      bytes = rebuilt;
+    } else {
+      bytes =
+        pdfDocument.annotationStorage.size > 0
+          ? await pdfDocument.saveDocument()
+          : await pdfDocument.getData();
+    }
     pdfDocument.annotationStorage.resetModified();
     // Emit an exact-size ArrayBuffer, never a Uint8Array view: axios sends
     // `view.buffer` for typed-array bodies, so a view over a larger buffer
@@ -1377,6 +1517,113 @@ async function commitAnnotations(): Promise<void> {
       void commitAnnotations();
     }
   }
+}
+
+// --- Page management (pdf.js 6 split/merge machinery) ------------------------
+//
+// The document-level model is the PagesMapper attached to the PDFDocumentProxy;
+// the viewer is told about every edit through onPagesEdited and rebuilds its
+// page views (including annotation editor migration). Saving an altered
+// document goes through extractPages, see commitAnnotations.
+
+type PagesMapperLike = {
+  pagesNumber: number;
+  hasBeenAltered: () => boolean;
+  deletePages: (pages: number[]) => void;
+  cleanSavedData: () => void;
+  movePages: (selected: Set<number>, pages: number[], index: number) => void;
+  copyPages: (pages: number[]) => void;
+  pastePages: (index: number) => void;
+  getPageMappingForSaving: () => unknown;
+};
+
+type ViewerWithPageEdits = {
+  onPagesEdited: (options: {
+    pagesMapper?: PagesMapperLike;
+    type: string;
+    hasBeenCut?: boolean;
+    pageNumbers?: number[];
+  }) => void;
+  currentPageNumber: number;
+};
+
+function pagesMapper(): PagesMapperLike | undefined {
+  return (pdfDocument as unknown as {pagesMapper?: PagesMapperLike} | undefined)?.pagesMapper;
+}
+
+const pageManagerOpen = ref(false);
+const pageChecks = ref<boolean[]>([]);
+const moveTargetValue = ref('1');
+
+const selectedPages = computed(() =>
+  pageChecks.value.flatMap((checked, index) => (checked ? [index + 1] : [])),
+);
+
+function openPageManager(): void {
+  pageChecks.value = Array.from({length: pageCount.value}, () => false);
+  moveTargetValue.value = '1';
+  pageManagerOpen.value = true;
+  closeMenu();
+}
+
+function afterPagesEdited(focusPage: number): void {
+  const mapper = pagesMapper();
+  const pageEditViewer = viewer.value as unknown as ViewerWithPageEdits | undefined;
+  if (!mapper || !pageEditViewer) return;
+  pageCount.value = mapper.pagesNumber;
+  const target = Math.min(Math.max(focusPage, 1), mapper.pagesNumber);
+  pageEditViewer.currentPageNumber = target;
+  currentPage.value = target;
+  pageChecks.value = Array.from({length: mapper.pagesNumber}, () => false);
+  scheduleCommit();
+}
+
+function deleteSelectedPages(): void {
+  const mapper = pagesMapper();
+  const pageEditViewer = viewer.value as unknown as ViewerWithPageEdits | undefined;
+  const pages = selectedPages.value;
+  if (!mapper || !pageEditViewer || !pages.length || pages.length >= pageCount.value) return;
+  mapper.deletePages(pages);
+  pageEditViewer.onPagesEdited({pagesMapper: mapper, type: 'delete', pageNumbers: pages});
+  // This UI has no undo bar: commit the deletion right away so the removed
+  // page views are disposed.
+  mapper.cleanSavedData();
+  pageEditViewer.onPagesEdited({type: 'cleanSavedData'});
+  afterPagesEdited(pages[0]!);
+}
+
+function duplicateSelectedPages(): void {
+  const mapper = pagesMapper();
+  const pageEditViewer = viewer.value as unknown as ViewerWithPageEdits | undefined;
+  const pages = selectedPages.value;
+  if (!mapper || !pageEditViewer || !pages.length) return;
+  mapper.copyPages(pages);
+  pageEditViewer.onPagesEdited({type: 'copy', pageNumbers: pages});
+  // Insert the copies right after the last selected page.
+  const insertAt = Math.max(...pages);
+  mapper.pastePages(insertAt);
+  pageEditViewer.onPagesEdited({
+    pagesMapper: mapper,
+    type: 'paste',
+    hasBeenCut: false,
+    pageNumbers: pages,
+  });
+  afterPagesEdited(insertAt + 1);
+}
+
+function moveSelectedPages(): void {
+  const mapper = pagesMapper();
+  const pageEditViewer = viewer.value as unknown as ViewerWithPageEdits | undefined;
+  const pages = selectedPages.value;
+  if (!mapper || !pageEditViewer || !pages.length) return;
+  const parsed = Number.parseInt(moveTargetValue.value, 10);
+  if (!Number.isFinite(parsed)) return;
+  // "Verschieben vor Seite N": 0-based insertion index, clamped so that a
+  // value past the end appends.
+  const index = Math.min(Math.max(parsed - 1, 0), pageCount.value);
+  mapper.movePages(new Set(pages), pages, index);
+  pageEditViewer.onPagesEdited({pagesMapper: mapper, type: 'move', pageNumbers: pages});
+  afterPagesEdited(index + 1);
 }
 
 function goPage(delta: number): void {
@@ -1538,6 +1785,10 @@ onMounted(() => {
     // so schedule the OpenCloud commit explicitly.
     onChanged: () => scheduleCommit(),
   });
+  signatureManager = new PdfSignatureManager({
+    container: regionElement.value!,
+    onAdded: () => scheduleCommit(),
+  });
   viewer.value = new PDFViewer({
     container: containerElement.value!,
     viewer: viewerElement.value!,
@@ -1546,7 +1797,7 @@ onMounted(() => {
     findController,
     // Supported by the runtime (threaded through to the annotation editors
     // and layers); the shipped PDFViewerOptions typings lag behind.
-    ...({commentManager} as object),
+    ...({commentManager, signatureManager} as object),
     // Without a language GenericL10n uses its baked-in fallback bundle and
     // performs no locale fetches.
     l10n: new (GenericL10n as unknown as new (lang?: string) => InstanceType<typeof GenericL10n>)(),
@@ -1561,8 +1812,16 @@ onMounted(() => {
   eventBus.on('annotationeditoruimanager', ({uiManager}: {uiManager: {
     delete: () => void;
     deleteComment: (editor: unknown, savedData: unknown) => void;
+    updateParams: (type: number, value: unknown) => void;
   }}) => {
+    uiManagerRef = uiManager;
     wireUiManagerAutosave(uiManager);
+  });
+  eventBus.on('annotationeditormodechanged', ({mode}: {mode: number}) => {
+    if (pendingCreateMode !== null && mode === pendingCreateMode) {
+      pendingCreateMode = null;
+      uiManagerRef?.updateParams(AnnotationEditorParamsType.CREATE, null);
+    }
   });
   eventBus.on('pagesinit', () => {
     if (!viewer.value) return;
@@ -1734,6 +1993,9 @@ onBeforeUnmount(() => {
 }
 .icon-stamp {
   --tb-icon: var(--tbi-stamp);
+}
+.icon-signature {
+  --tb-icon: var(--tbi-signature);
 }
 .icon-page-up {
   --tb-icon: var(--tbi-page-up);
@@ -2264,6 +2526,85 @@ onBeforeUnmount(() => {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+.pdfa-pages-dialog {
+  width: min(460px, 94%);
+}
+
+.pdfa-pages-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+  margin-top: 8px;
+}
+
+.pdfa-pages-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--field-border);
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.pdfa-pages-item:hover {
+  background: var(--button-hover);
+}
+
+.pdfa-pages-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.pdfa-pages-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--field-border);
+  border-radius: 4px;
+  background: var(--field-bg);
+  color: var(--toolbar-text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pdfa-pages-btn:hover:enabled {
+  background: var(--button-hover);
+}
+
+.pdfa-pages-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pdfa-pages-move {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pdfa-pages-move-input {
+  width: 48px;
+  padding: 4px 6px;
+  border: 1px solid var(--field-border);
+  border-radius: 4px;
+  background: var(--field-bg);
+  color: var(--toolbar-text);
+  font-size: 13px;
+  text-align: center;
+}
+
+.pdfa-pages-hint {
+  margin: 10px 0 0;
+  color: var(--toolbar-muted, #6f6f77);
+  font-size: 12px;
+}
 </style>
 
 <!-- Unscoped: the comment dialog/popup are created programmatically by the
@@ -2311,6 +2652,118 @@ onBeforeUnmount(() => {
 .pdf-annotator .pdfa-comment-text:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* Signature dialog (created programmatically by the signature manager). */
+.pdf-annotator .pdfa-sign-backdrop {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.pdf-annotator .pdfa-sign-backdrop.hidden {
+  display: none;
+}
+
+.pdf-annotator .pdfa-sign-dialog {
+  position: static;
+  margin-top: 8vh;
+  width: min(640px, 94%);
+}
+
+.pdf-annotator .pdfa-sign-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.pdf-annotator .pdfa-sign-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.pdf-annotator .pdfa-sign-tab {
+  padding: 4px 12px;
+  border: 1px solid var(--field-border);
+  border-radius: 4px;
+  background: var(--field-bg);
+  color: var(--toolbar-text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pdf-annotator .pdfa-sign-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.pdf-annotator .pdfa-sign-panel.hidden {
+  display: none;
+}
+
+.pdf-annotator .pdfa-sign-type-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--field-border);
+  border-radius: 4px;
+  background: var(--field-bg);
+  color: var(--toolbar-text);
+  font-family: 'Segoe Script', 'Bradley Hand', 'Comic Sans MS', cursive;
+  font-style: normal;
+  font-weight: 400;
+  font-size: 28px;
+}
+
+.pdf-annotator .pdfa-sign-canvas {
+  display: block;
+  width: 100%;
+  border: 1px dashed var(--field-border);
+  border-radius: 4px;
+  background: #fff;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.pdf-annotator .pdfa-sign-clear {
+  margin-top: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--field-border);
+  border-radius: 4px;
+  background: var(--field-bg);
+  color: var(--toolbar-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pdf-annotator .pdfa-sign-hint {
+  margin: 6px 0 0;
+  color: var(--toolbar-muted, #6f6f77);
+  font-size: 12px;
+}
+
+.pdf-annotator .pdfa-sign-error {
+  margin: 0;
+  min-height: 1em;
+  color: #c50042;
+  font-size: 12px;
+}
+
+.pdf-annotator .pdfa-sign-description-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--toolbar-muted, #6f6f77);
+}
+
+.pdf-annotator .pdfa-sign-description {
+  padding: 6px 8px;
+  border: 1px solid var(--field-border);
+  border-radius: 4px;
+  background: var(--field-bg);
+  color: var(--toolbar-text);
+  font: inherit;
 }
 
 .pdf-annotator .pdfa-comment-actions {

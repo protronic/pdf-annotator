@@ -114,6 +114,34 @@ try {
     `emitted PDF should store the OpenCloud user as /T, got [${commented.annotationAuthors.join(' | ')}]`,
   );
 
+  // 5b. Add a signature through the signature-manager dialog (type tab).
+  await page.click('button[title="Unterschrift hinzufügen"]');
+  await page.waitForTimeout(600);
+  if ((await page.locator('.pdfa-sign-backdrop:not(.hidden)').count()) === 0) {
+    // The pending editor may need a click on the page to spawn.
+    await page.locator('.pdfViewer .page').first().click({position: {x: 260, y: 520}});
+  }
+  await page.waitForSelector('.pdfa-sign-backdrop:not(.hidden)', {timeout: 5000});
+  await page.fill('.pdfa-sign-type-input', 'Max Mustermann');
+  const beforeSignature = await page.evaluate(() => ({
+    emitted: window.__harness.emitted.length,
+  }));
+  const annotationsBeforeSignature = commented.annotationSubtypes.length;
+  await page.click('.pdfa-sign-add');
+  await page.waitForSelector('.signatureEditor', {timeout: 5000});
+  await page.click('button[title="Auswahlwerkzeug"]');
+  await page.waitForFunction(
+    (count) => window.__harness.emitted.length > count,
+    beforeSignature.emitted,
+    {timeout: 15000},
+  );
+  await page.waitForTimeout(1500);
+  const signed = await page.evaluate(() => window.__verifyEmitted());
+  check(
+    signed.annotationSubtypes.length > annotationsBeforeSignature,
+    `signature should add an annotation, got [${signed.annotationSubtypes.join(', ')}]`,
+  );
+
   // 6. The pdf.js-style zoom select drives the viewer scale.
   await page.selectOption('.zoom-select', '1');
   await page.waitForTimeout(400);
@@ -152,7 +180,7 @@ try {
   await page.click('button[title="Werkzeuge"]');
   await page.waitForSelector('.pdfa-menu', {timeout: 5000});
   const menuText = await page.textContent('.pdfa-menu');
-  for (const item of ['Letzte Seite anzeigen', 'Hand-Werkzeug', 'Kombinierte Seitenanordnung', 'Drucken', 'Dokumenteigenschaften']) {
+  for (const item of ['Letzte Seite anzeigen', 'Hand-Werkzeug', 'Kombinierte Seitenanordnung', 'Drucken', 'Seiten verwalten', 'Dokumenteigenschaften']) {
     check(menuText?.includes(item), `secondary menu should offer "${item}"`);
   }
 
@@ -201,6 +229,57 @@ try {
     'comment sidebar should close again',
   );
 
+  // 9. Page management: duplicating page 1 grows the saved PDF to 3 pages,
+  // deleting the copy shrinks it back - both through the extractPages-based
+  // save path.
+  await page.click('button[title="Werkzeuge"]');
+  await page.waitForSelector('.pdfa-menu', {timeout: 5000});
+  await page.click('.pdfa-menu >> text=Seiten verwalten');
+  await page.waitForSelector('.pdfa-pages-dialog', {timeout: 5000});
+  await page.locator('.pdfa-pages-item input').first().check();
+  const beforeDuplicate = await page.evaluate(() => window.__harness.emitted.length);
+  await page.click('.pdfa-pages-duplicate');
+  await page.waitForTimeout(400);
+  const countAfterDuplicate = await page.textContent('.page-count');
+  check(
+    countAfterDuplicate?.includes('von 3'),
+    `duplicating a page should show "von 3", got "${countAfterDuplicate}"`,
+  );
+  await page.waitForFunction(
+    (count) => window.__harness.emitted.length > count,
+    beforeDuplicate,
+    {timeout: 20000},
+  );
+  await page.waitForTimeout(1000);
+  const duplicated = await page.evaluate(() => window.__verifyEmitted());
+  check(
+    duplicated.numPages === 3,
+    `saved PDF should hold 3 pages after duplicating, got ${duplicated.numPages}`,
+  );
+  // Delete the copy (page 2) again.
+  await page.locator('.pdfa-pages-item input').nth(1).check();
+  const beforeDelete = await page.evaluate(() => window.__harness.emitted.length);
+  await page.click('.pdfa-pages-delete');
+  await page.waitForTimeout(400);
+  const countAfterDelete = await page.textContent('.page-count');
+  check(
+    countAfterDelete?.includes('von 2'),
+    `deleting the copy should show "von 2", got "${countAfterDelete}"`,
+  );
+  await page.waitForFunction(
+    (count) => window.__harness.emitted.length > count,
+    beforeDelete,
+    {timeout: 20000},
+  );
+  await page.waitForTimeout(1000);
+  const shrunk = await page.evaluate(() => window.__verifyEmitted());
+  check(
+    shrunk.numPages === 2,
+    `saved PDF should hold 2 pages after deleting the copy, got ${shrunk.numPages}`,
+  );
+  await page.click('.pdfa-pages-dialog .pdfa-about-close');
+  await page.waitForTimeout(200);
+
   const errors = await page.evaluate(() => window.__harness.errors);
   check(errors.length === 0, `page errors: ${errors.join(' | ')}`);
 } catch (error) {
@@ -211,7 +290,7 @@ if (problems.length) {
   console.error(`✗ pdf-annotator harness\n  ${problems.join('\n  ')}`);
   console.error(consoleLines.join('\n'));
 } else {
-  console.log('✓ pdf-annotator harness: render, annotate, comment, emit, verify, zoom, save, find, menu, about, sidebar');
+  console.log('✓ pdf-annotator harness: render, annotate, comment, signature, emit, verify, zoom, save, find, menu, about, sidebar, pages');
 }
 
 await browser.close();
