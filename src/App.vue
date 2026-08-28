@@ -5,11 +5,11 @@
         <button
           type="button"
           class="tb-btn"
-          :class="{toggled: outlineOpen}"
-          title="Dokumentstruktur"
-          aria-label="Dokumentstruktur"
+          :class="{toggled: viewsOpen}"
+          title="Seitenleiste"
+          aria-label="Seitenleiste"
           :disabled="!pdfLoaded"
-          @click="outlineOpen = !outlineOpen"
+          @click="viewsOpen = !viewsOpen"
         >
           <span class="tb-icon icon-outline" aria-hidden="true" />
         </button>
@@ -219,7 +219,7 @@
     <main
       ref="regionElement"
       class="viewer-region"
-      :class="{'with-sidebar': sidebarOpen, 'with-outline': outlineOpen}"
+      :class="{'with-sidebar': sidebarOpen, 'with-outline': viewsOpen}"
     >
       <div
         ref="containerElement"
@@ -261,23 +261,109 @@
           {{ findMatches.total ? `${findMatches.current} von ${findMatches.total}` : 'Keine Treffer' }}
         </span>
       </div>
-      <aside v-if="outlineOpen" class="pdfa-outline" aria-label="Dokumentstruktur">
-        <div class="pdfa-comments-header">Dokumentstruktur</div>
-        <p v-if="!outlineItems.length" class="pdfa-comments-empty">
-          Keine Dokumentstruktur vorhanden.
-        </p>
-        <ul v-else class="pdfa-outline-list">
-          <li v-for="(item, index) in outlineItems" :key="index">
+      <aside v-if="viewsOpen" class="pdfa-outline pdfa-views" aria-label="Seitenleiste">
+        <div class="pdfa-views-header">
+          <div class="pdfa-views-select">
             <button
               type="button"
-              class="pdfa-outline-entry"
-              :style="{paddingInlineStart: `${12 + item.depth * 14}px`}"
-              @click="goToOutlineItem(item.dest)"
+              class="pdfa-views-select-btn"
+              title="Ansicht wählen"
+              aria-label="Ansicht wählen"
+              @click="viewsMenuOpen = !viewsMenuOpen"
             >
-              {{ item.title }}
+              {{ viewsView === 'pages' ? '⊞' : '☰' }} <span class="pdfa-views-caret">⌄</span>
             </button>
-          </li>
-        </ul>
+            <div v-if="viewsMenuOpen" class="pdfa-views-menu" role="menu">
+              <button type="button" role="menuitem" @click="setViewsView('pages')">
+                <span class="pdfa-views-check">{{ viewsView === 'pages' ? '✓' : '' }}</span>
+                ⊞ Seiten
+              </button>
+              <button type="button" role="menuitem" @click="setViewsView('outline')">
+                <span class="pdfa-views-check">{{ viewsView === 'outline' ? '✓' : '' }}</span>
+                ☰ Dokumentstruktur
+              </button>
+              <button type="button" role="menuitem" disabled title="Noch nicht verfügbar">
+                <span class="pdfa-views-check" /> 📎 Anhänge
+              </button>
+              <button type="button" role="menuitem" disabled title="Noch nicht verfügbar">
+                <span class="pdfa-views-check" /> ◫ Ebenen
+              </button>
+            </div>
+          </div>
+          <span class="pdfa-views-title">
+            {{ viewsView === 'pages' ? 'Seiten' : 'Dokumentstruktur' }}
+          </span>
+        </div>
+        <template v-if="viewsView === 'pages'">
+          <div class="pdfa-thumbs" role="list">
+            <div
+              v-for="n in pageCount"
+              :key="n"
+              class="pdfa-thumb"
+              :class="{current: n === currentPage, selected: pageChecks[n - 1]}"
+              role="listitem"
+            >
+              <label class="pdfa-thumb-check" @click.stop>
+                <input v-model="pageChecks[n - 1]" type="checkbox" :title="`Seite ${n} auswählen`" />
+              </label>
+              <button
+                type="button"
+                class="pdfa-thumb-page"
+                :title="`Seite ${n} anzeigen`"
+                @click="goToPage(n)"
+              >
+                <img v-if="thumbSources[n]" :src="thumbSources[n]" alt="" draggable="false" />
+                <span v-else class="pdfa-thumb-loading" />
+              </button>
+              <span class="pdfa-thumb-badge">{{ n }}</span>
+            </div>
+          </div>
+          <div v-if="selectedPages.length && !isReadOnly" class="pdfa-thumbs-status">
+            <span>{{ selectedPages.length }} ausgewählt</span>
+            <div class="pdfa-thumbs-actions">
+              <button
+                type="button"
+                class="pdfa-pages-btn pdfa-pages-delete"
+                :disabled="selectedPages.length >= pageCount"
+                @click="deleteSelectedPages"
+              >
+                Löschen
+              </button>
+              <button type="button" class="pdfa-pages-btn pdfa-pages-duplicate" @click="duplicateSelectedPages">
+                Duplizieren
+              </button>
+              <span class="pdfa-pages-move">
+                <button type="button" class="pdfa-pages-btn pdfa-pages-move-btn" @click="moveSelectedPages">
+                  Verschieben vor
+                </button>
+                <input
+                  v-model="moveTargetValue"
+                  class="pdfa-pages-move-input"
+                  type="text"
+                  inputmode="numeric"
+                  aria-label="Zielseite"
+                />
+              </span>
+            </div>
+          </div>
+        </template>
+        <template v-else>
+          <p v-if="!outlineItems.length" class="pdfa-comments-empty">
+            Keine Dokumentstruktur vorhanden.
+          </p>
+          <ul v-else class="pdfa-outline-list">
+            <li v-for="(item, index) in outlineItems" :key="index">
+              <button
+                type="button"
+                class="pdfa-outline-entry"
+                :style="{paddingInlineStart: `${12 + item.depth * 14}px`}"
+                @click="goToOutlineItem(item.dest)"
+              >
+                {{ item.title }}
+              </button>
+            </li>
+          </ul>
+        </template>
       </aside>
       <div v-if="menuOpen" class="pdfa-menu-backdrop" @pointerdown.self="closeMenu" />
       <div v-if="menuOpen" class="pdfa-menu" role="menu">
@@ -410,66 +496,6 @@
           <div class="pdfa-about-actions">
             <span class="pdfa-comment-spacer" />
             <button type="button" class="pdfa-about-close" @click="docPropsOpen = false">
-              Schließen
-            </button>
-          </div>
-        </div>
-      </div>
-      <div
-        v-if="pageManagerOpen"
-        class="pdfa-about-backdrop"
-        @pointerdown.self="pageManagerOpen = false"
-      >
-        <div class="pdfa-about-dialog pdfa-pages-dialog" role="dialog" aria-label="Seiten verwalten">
-          <h2 class="pdfa-about-title">Seiten verwalten</h2>
-          <div class="pdfa-pages-grid">
-            <label v-for="n in pageCount" :key="n" class="pdfa-pages-item">
-              <input v-model="pageChecks[n - 1]" type="checkbox" />
-              <span>{{ n }}</span>
-            </label>
-          </div>
-          <div class="pdfa-pages-actions">
-            <button
-              type="button"
-              class="pdfa-pages-btn pdfa-pages-delete"
-              :disabled="!selectedPages.length || selectedPages.length >= pageCount"
-              @click="deleteSelectedPages"
-            >
-              Löschen
-            </button>
-            <button
-              type="button"
-              class="pdfa-pages-btn pdfa-pages-duplicate"
-              :disabled="!selectedPages.length"
-              @click="duplicateSelectedPages"
-            >
-              Duplizieren
-            </button>
-            <span class="pdfa-pages-move">
-              <button
-                type="button"
-                class="pdfa-pages-btn pdfa-pages-move-btn"
-                :disabled="!selectedPages.length"
-                @click="moveSelectedPages"
-              >
-                Verschieben vor Seite
-              </button>
-              <input
-                v-model="moveTargetValue"
-                class="pdfa-pages-move-input"
-                type="text"
-                inputmode="numeric"
-                aria-label="Zielseite"
-              />
-            </span>
-          </div>
-          <p class="pdfa-pages-hint">
-            Änderungen wirken sofort in der Ansicht und werden beim Speichern in die Datei
-            übernommen.
-          </p>
-          <div class="pdfa-about-actions">
-            <span class="pdfa-comment-spacer" />
-            <button type="button" class="pdfa-about-close" @click="pageManagerOpen = false">
               Schließen
             </button>
           </div>
@@ -735,8 +761,21 @@ const findOpen = ref(false);
 const findQuery = ref('');
 const findMatches = ref<{current: number; total: number} | null>(null);
 const findInputElement = ref<HTMLInputElement>();
-const outlineOpen = ref(false);
+// Views sidebar (pdf.js-style): page thumbnails or the document outline.
+const viewsOpen = ref(false);
+const viewsView = ref<'pages' | 'outline'>('pages');
+const viewsMenuOpen = ref(false);
 const outlineItems = ref<Array<{title: string; dest: unknown; depth: number}>>([]);
+
+function setViewsView(view: 'pages' | 'outline'): void {
+  viewsView.value = view;
+  viewsMenuOpen.value = false;
+}
+
+function goToPage(pageNumber: number): void {
+  if (!viewer.value) return;
+  viewer.value.currentPageNumber = pageNumber;
+}
 const docPropsOpen = ref(false);
 const docProps = ref<Array<{label: string; value: string}>>([]);
 const handTool = ref(false);
@@ -976,6 +1015,9 @@ async function loadDocumentFrom(source: ContentValue): Promise<void> {
     wireAnnotationAutosave(document);
     pageCount.value = document.numPages;
     currentPage.value = 1;
+    pageChecks.value = Array.from({length: document.numPages}, () => false);
+    resetThumbnails();
+    if (viewsOpen.value && viewsView.value === 'pages') void renderThumbnails();
     viewer.value!.setDocument(document);
     linkService!.setDocument(document, null);
     lastAppliedContent = source;
@@ -1551,7 +1593,6 @@ function pagesMapper(): PagesMapperLike | undefined {
   return (pdfDocument as unknown as {pagesMapper?: PagesMapperLike} | undefined)?.pagesMapper;
 }
 
-const pageManagerOpen = ref(false);
 const pageChecks = ref<boolean[]>([]);
 const moveTargetValue = ref('1');
 
@@ -1562,9 +1603,68 @@ const selectedPages = computed(() =>
 function openPageManager(): void {
   pageChecks.value = Array.from({length: pageCount.value}, () => false);
   moveTargetValue.value = '1';
-  pageManagerOpen.value = true;
+  viewsView.value = 'pages';
+  viewsOpen.value = true;
   closeMenu();
 }
+
+// --- Page thumbnails for the views sidebar -----------------------------------
+
+const thumbSources = ref<Record<number, string>>({});
+let thumbRenderToken = 0;
+
+function resetThumbnails(): void {
+  thumbRenderToken++;
+  thumbSources.value = {};
+}
+
+/**
+ * Renders small page previews sequentially. Prefers the viewer's live page
+ * views (correct after page edits, where the transport's getPage cache may
+ * still map old positions) and falls back to getPage.
+ */
+async function renderThumbnails(): Promise<void> {
+  const doc = pdfDocument;
+  if (!doc) return;
+  const token = ++thumbRenderToken;
+  const count = pageCount.value;
+  type RenderablePage = {
+    getViewport: (options: {scale: number}) => {width: number; height: number};
+    render: (options: unknown) => {promise: Promise<unknown>};
+  };
+  const pages = (viewer.value as unknown as {_pages?: Array<{pdfPage?: unknown}>} | undefined)
+    ?._pages;
+  for (let n = 1; n <= count; n++) {
+    if (token !== thumbRenderToken || destroyedDoc(doc)) return;
+    if (thumbSources.value[n]) continue;
+    try {
+      const page = ((pages?.[n - 1]?.pdfPage as RenderablePage | undefined) ??
+        ((await doc.getPage(n)) as unknown)) as RenderablePage;
+      const base = page.getViewport({scale: 1});
+      const scale = 132 / base.width;
+      const viewport = page.getViewport({scale});
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.ceil(viewport.width * devicePixelRatio);
+      canvas.height = Math.ceil(viewport.height * devicePixelRatio);
+      const ctx = canvas.getContext('2d')!;
+      ctx.scale(devicePixelRatio, devicePixelRatio);
+      await page.render({canvasContext: ctx, viewport}).promise;
+      if (token !== thumbRenderToken) return;
+      thumbSources.value = {...thumbSources.value, [n]: canvas.toDataURL('image/png')};
+    } catch (thumbError) {
+      console.warn(`Thumbnail für Seite ${n} fehlgeschlagen`, thumbError);
+    }
+  }
+}
+
+function destroyedDoc(doc: PDFDocumentProxy): boolean {
+  return doc !== pdfDocument;
+}
+
+watch([viewsOpen, viewsView, pageCount], ([open, view]) => {
+  if (open && view === 'pages') void renderThumbnails();
+  if (!open) viewsMenuOpen.value = false;
+});
 
 function afterPagesEdited(focusPage: number): void {
   const mapper = pagesMapper();
@@ -1575,6 +1675,8 @@ function afterPagesEdited(focusPage: number): void {
   pageEditViewer.currentPageNumber = target;
   currentPage.value = target;
   pageChecks.value = Array.from({length: mapper.pagesNumber}, () => false);
+  resetThumbnails();
+  if (viewsOpen.value && viewsView.value === 'pages') void renderThumbnails();
   scheduleCommit();
 }
 
@@ -2228,6 +2330,182 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
+.pdfa-views {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.pdfa-views-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--toolbar-border);
+}
+
+.pdfa-views-title {
+  flex: 1;
+  text-align: center;
+  font-weight: 600;
+  /* Visually center against the selector button on the left. */
+  margin-inline-end: 40px;
+}
+
+.pdfa-views-select {
+  position: relative;
+}
+
+.pdfa-views-select-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--toolbar-text);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.pdfa-views-select-btn:hover {
+  background: var(--button-hover);
+}
+
+.pdfa-views-caret {
+  font-size: 11px;
+  color: var(--toolbar-muted);
+}
+
+.pdfa-views-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  inset-inline-start: 0;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  min-width: 190px;
+  padding: 4px;
+  border: 1px solid var(--toolbar-border);
+  border-radius: 6px;
+  background: var(--toolbar-bg);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.pdfa-views-menu button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--toolbar-text);
+  font-size: 13px;
+  text-align: start;
+  cursor: pointer;
+}
+
+.pdfa-views-menu button:hover:enabled {
+  background: var(--button-hover);
+}
+
+.pdfa-views-menu button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.pdfa-views-check {
+  display: inline-block;
+  width: 14px;
+  color: var(--accent);
+}
+
+.pdfa-thumbs {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 8px;
+}
+
+.pdfa-thumb {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.pdfa-thumb-page {
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  line-height: 0;
+}
+
+.pdfa-thumb-page img {
+  display: block;
+  width: 132px;
+  height: auto;
+  border: 1px solid var(--toolbar-border);
+  border-radius: 4px;
+  background: #fff;
+}
+
+.pdfa-thumb.current .pdfa-thumb-page,
+.pdfa-thumb.selected .pdfa-thumb-page {
+  border-color: var(--accent);
+}
+
+.pdfa-thumb-loading {
+  display: block;
+  width: 132px;
+  height: 170px;
+  border: 1px dashed var(--toolbar-border);
+  border-radius: 4px;
+}
+
+.pdfa-thumb-check {
+  position: absolute;
+  top: 6px;
+  inset-inline-start: -2px;
+  z-index: 2;
+  padding: 2px;
+  line-height: 0;
+}
+
+.pdfa-thumb-badge {
+  margin-top: 4px;
+  min-width: 22px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  text-align: center;
+}
+
+.pdfa-thumbs-status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--toolbar-border);
+  font-size: 12px;
+}
+
+.pdfa-thumbs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 .pdfa-outline-list {
   margin: 0;
   padding: 4px 0;
@@ -2527,35 +2805,6 @@ onBeforeUnmount(() => {
   outline-offset: 1px;
 }
 
-.pdfa-pages-dialog {
-  width: min(460px, 94%);
-}
-
-.pdfa-pages-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  max-height: 220px;
-  overflow: auto;
-  margin-top: 8px;
-}
-
-.pdfa-pages-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 9px;
-  border: 1px solid var(--field-border);
-  border-radius: 4px;
-  font-size: 12px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.pdfa-pages-item:hover {
-  background: var(--button-hover);
-}
-
 .pdfa-pages-actions {
   display: flex;
   flex-wrap: wrap;
@@ -2600,11 +2849,6 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 
-.pdfa-pages-hint {
-  margin: 10px 0 0;
-  color: var(--toolbar-muted, #6f6f77);
-  font-size: 12px;
-}
 </style>
 
 <!-- Unscoped: the comment dialog/popup are created programmatically by the

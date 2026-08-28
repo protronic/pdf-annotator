@@ -229,14 +229,17 @@ try {
     'comment sidebar should close again',
   );
 
-  // 9. Page management: duplicating page 1 grows the saved PDF to 3 pages,
-  // deleting the copy shrinks it back - both through the extractPages-based
-  // save path.
+  // 9. Views sidebar: thumbnails render; duplicating page 1 grows the saved
+  // PDF to 3 pages, deleting the copy shrinks it back - both through the
+  // extractPages-based save path.
   await page.click('button[title="Werkzeuge"]');
   await page.waitForSelector('.pdfa-menu', {timeout: 5000});
   await page.click('.pdfa-menu >> text=Seiten verwalten');
-  await page.waitForSelector('.pdfa-pages-dialog', {timeout: 5000});
-  await page.locator('.pdfa-pages-item input').first().check();
+  await page.waitForSelector('.pdfa-views', {timeout: 5000});
+  await page.waitForSelector('.pdfa-thumb img', {timeout: 30000});
+  const thumbCount = await page.locator('.pdfa-thumb').count();
+  check(thumbCount === 2, `sidebar should show 2 page thumbnails, got ${thumbCount}`);
+  await page.locator('.pdfa-thumb-check input').first().check();
   const beforeDuplicate = await page.evaluate(() => window.__harness.emitted.length);
   await page.click('.pdfa-pages-duplicate');
   await page.waitForTimeout(400);
@@ -256,8 +259,14 @@ try {
     duplicated.numPages === 3,
     `saved PDF should hold 3 pages after duplicating, got ${duplicated.numPages}`,
   );
-  // Delete the copy (page 2) again.
-  await page.locator('.pdfa-pages-item input').nth(1).check();
+  // Delete the copy (page 2) again - the thumbnails were rebuilt for the
+  // new page arrangement first.
+  await page.waitForFunction(
+    () => document.querySelectorAll('.pdfa-thumb').length === 3,
+    null,
+    {timeout: 10000},
+  );
+  await page.locator('.pdfa-thumb-check input').nth(1).check();
   const beforeDelete = await page.evaluate(() => window.__harness.emitted.length);
   await page.click('.pdfa-pages-delete');
   await page.waitForTimeout(400);
@@ -277,8 +286,22 @@ try {
     shrunk.numPages === 2,
     `saved PDF should hold 2 pages after deleting the copy, got ${shrunk.numPages}`,
   );
-  await page.click('.pdfa-pages-dialog .pdfa-about-close');
+
+  // 9b. The view selector switches to the document outline view.
+  await page.click('.pdfa-views-select-btn');
+  await page.waitForSelector('.pdfa-views-menu', {timeout: 5000});
+  await page.click('.pdfa-views-menu >> text=Dokumentstruktur');
+  const viewsTitle = await page.textContent('.pdfa-views-title');
+  check(
+    viewsTitle?.includes('Dokumentstruktur'),
+    `view selector should switch to the outline view, got "${viewsTitle}"`,
+  );
+  await page.click('button[title="Seitenleiste"]');
   await page.waitForTimeout(200);
+  check(
+    (await page.locator('.pdfa-views').count()) === 0,
+    'views sidebar should close again',
+  );
 
   const errors = await page.evaluate(() => window.__harness.errors);
   check(errors.length === 0, `page errors: ${errors.join(' | ')}`);
@@ -290,7 +313,7 @@ if (problems.length) {
   console.error(`✗ pdf-annotator harness\n  ${problems.join('\n  ')}`);
   console.error(consoleLines.join('\n'));
 } else {
-  console.log('✓ pdf-annotator harness: render, annotate, comment, signature, emit, verify, zoom, save, find, menu, about, sidebar, pages');
+  console.log('✓ pdf-annotator harness: render, annotate, comment, signature, emit, verify, zoom, save, find, menu, about, sidebar, thumbnails, pages, views');
 }
 
 await browser.close();
