@@ -800,8 +800,10 @@ let uiManagerRef:
   | {
       updateParams: (type: number, value: unknown) => void;
       commitOrRemove?: () => void;
+      unselectAll?: () => void;
     }
   | undefined;
+let inkIdleTimer = 0;
 let pendingCreateMode: number | null = null;
 let commitTimer = 0;
 let commitInFlight = false;
@@ -1438,6 +1440,55 @@ function goToComment(entry: CommentEntry): void {
   }
 }
 
+/**
+ * pdf.js 6 keeps freehand strokes in an open drawing session on the page's
+ * editor layer; the annotation storage only sees them once the session ends
+ * (tool change, page switch). Ends any open session so pending strokes are
+ * taken over into the document.
+ */
+function commitOpenDrawing(): boolean {
+  const pages =
+    (
+      viewer.value as unknown as {
+        _pages?: Array<{
+          annotationEditorLayer?: {
+            annotationEditorLayer?: {commitOrRemove?: () => boolean};
+          };
+        }>;
+      } | undefined
+    )?._pages ?? [];
+  let committed = false;
+  for (const pageView of pages) {
+    try {
+      if (pageView?.annotationEditorLayer?.annotationEditorLayer?.commitOrRemove?.()) {
+        committed = true;
+      }
+    } catch (drawError) {
+      console.warn('Offene Zeichnung konnte nicht übernommen werden', drawError);
+    }
+  }
+  return committed;
+}
+
+/**
+ * While the freehand tool stays active, commit the drawing session after a
+ * short idle pause - otherwise strokes reach the document (and autosave)
+ * only when the user switches tools. Strokes drawn in quick succession
+ * still merge into one annotation.
+ */
+function onDrawingPointerUp(): void {
+  if (editorMode.value !== modes.INK || props.isReadOnly) return;
+  window.clearTimeout(inkIdleTimer);
+  inkIdleTimer = window.setTimeout(() => {
+    if (editorMode.value !== modes.INK) return;
+    if (commitOpenDrawing()) {
+      // Ending the session selects the fresh editor; drop the selection so
+      // the next stroke starts cleanly without the edit toolbar popping up.
+      uiManagerRef?.unselectAll?.();
+    }
+  }, 1500);
+}
+
 function scheduleCommit(): void {
   if (sidebarOpen.value) void refreshSidebar();
   if (props.isReadOnly) return;
@@ -1538,6 +1589,11 @@ async function runCommit(): Promise<void> {
   if (!pdfDocument) return;
   commitInFlight = true;
   saving.value = true;
+  // Pending freehand strokes live in an open drawing session, not yet in
+  // the annotation storage - take them over before serializing. The
+  // setValue this triggers schedules a redundant follow-up commit; its
+  // state is already part of this run, so drop that timer.
+  if (commitOpenDrawing()) window.clearTimeout(commitTimer);
   try {
     // With page edits (delete/move/duplicate) the document must be rebuilt
     // through extractPages - saveDocument only appends an incremental update
@@ -1978,6 +2034,7 @@ onMounted(() => {
   scrollContainer.addEventListener('pointermove', onPanPointerMove);
   scrollContainer.addEventListener('pointerup', onPanPointerUp);
   scrollContainer.addEventListener('pointercancel', onPanPointerUp);
+  scrollContainer.addEventListener('pointerup', onDrawingPointerUp);
   eventBus.on(
     'scalechanging',
     ({scale: newScale, presetValue}: {scale: number; presetValue?: string}) => {
@@ -2009,7 +2066,9 @@ onBeforeUnmount(() => {
   destroyPrintFrame();
   window.removeEventListener('keydown', onWindowKeydown, true);
   containerElement.value?.removeEventListener('wheel', onViewerWheel);
+  containerElement.value?.removeEventListener('pointerup', onDrawingPointerUp);
   window.clearTimeout(commitTimer);
+  window.clearTimeout(inkIdleTimer);
   loadToken++;
   resizeObserver?.disconnect();
   commentManager?.destroy();

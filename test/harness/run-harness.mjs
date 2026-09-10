@@ -142,6 +142,39 @@ try {
     `signature should add an annotation, got [${signed.annotationSubtypes.join(', ')}]`,
   );
 
+  // 5c. Freehand strokes must reach the document WITHOUT switching tools:
+  // the open drawing session commits after an idle pause and autosave
+  // picks it up.
+  const inkCountBefore = (await page.evaluate(() => window.__verifyEmitted()))
+    .annotationSubtypes.filter((subtype) => subtype === 'Ink').length;
+  await page.click('button[title="Freihand zeichnen"]');
+  await page.waitForTimeout(300);
+  const idleInkBox = await page.locator('.pdfViewer .page').first().boundingBox();
+  await page.mouse.move(idleInkBox.x + 120, idleInkBox.y + 600);
+  await page.mouse.down();
+  for (let step = 1; step <= 6; step++) {
+    await page.mouse.move(idleInkBox.x + 120 + step * 16, idleInkBox.y + 600 + (step % 2 ? 10 : -10));
+  }
+  await page.mouse.up();
+  const emittedBeforeIdle = await page.evaluate(() => window.__harness.emitted.length);
+  // Stay in the ink tool - no click on the select tool here.
+  await page.waitForFunction(
+    (count) => window.__harness.emitted.length > count,
+    emittedBeforeIdle,
+    {timeout: 15000},
+  );
+  await page.waitForTimeout(500);
+  const idleVerify = await page.evaluate(() => window.__verifyEmitted());
+  const inkCountAfter = idleVerify.annotationSubtypes.filter(
+    (subtype) => subtype === 'Ink',
+  ).length;
+  check(
+    inkCountAfter > inkCountBefore,
+    `idle-committed stroke should reach the saved PDF without a tool switch (Ink ${inkCountBefore} -> ${inkCountAfter})`,
+  );
+  await page.click('button[title="Auswahlwerkzeug"]');
+  await page.waitForTimeout(300);
+
   // 6. The pdf.js-style zoom select drives the viewer scale.
   await page.selectOption('.zoom-select', '1');
   await page.waitForTimeout(400);
@@ -344,7 +377,7 @@ if (problems.length) {
   console.error(`✗ pdf-annotator harness\n  ${problems.join('\n  ')}`);
   console.error(consoleLines.join('\n'));
 } else {
-  console.log('✓ pdf-annotator harness: render, annotate, comment, signature, emit, verify, zoom, save, quick-save, find, menu, about, sidebar, thumbnails, pages, views');
+  console.log('✓ pdf-annotator harness: render, annotate, comment, signature, ink-idle-commit, emit, verify, zoom, save, quick-save, find, menu, about, sidebar, thumbnails, pages, views');
 }
 
 await browser.close();
