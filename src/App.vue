@@ -796,11 +796,17 @@ let pdfDocument: PDFDocumentProxy | undefined;
 let resizeObserver: ResizeObserver | undefined;
 let commentManager: PdfCommentManager | undefined;
 let signatureManager: PdfSignatureManager | undefined;
-let uiManagerRef: {updateParams: (type: number, value: unknown) => void} | undefined;
+let uiManagerRef:
+  | {
+      updateParams: (type: number, value: unknown) => void;
+      commitOrRemove?: () => void;
+    }
+  | undefined;
 let pendingCreateMode: number | null = null;
 let commitTimer = 0;
 let commitInFlight = false;
 let commitQueued = false;
+let commitRun: Promise<void> | null = null;
 let loadToken = 0;
 let lastEmitted: ArrayBuffer | undefined;
 let lastAppliedContent: ContentValue | undefined;
@@ -1279,6 +1285,14 @@ async function printDocument(): Promise<void> {
 
 async function saveToOpenCloud(): Promise<void> {
   if (props.isReadOnly || !pdfLoaded.value) return;
+  // Commit the currently active editor first (a focused text note, a
+  // selected drawing): its latest state lives in the editor, not yet in
+  // the annotation storage.
+  try {
+    uiManagerRef?.commitOrRemove?.();
+  } catch (commitError) {
+    console.warn('commitOrRemove vor dem Speichern fehlgeschlagen', commitError);
+  }
   window.clearTimeout(commitTimer);
   await commitAnnotations();
   emit('save');
@@ -1429,9 +1443,11 @@ function scheduleCommit(): void {
   if (props.isReadOnly) return;
   pendingCommit.value = true;
   window.clearTimeout(commitTimer);
+  // Short debounce: until the commit has emitted, the change only lives in
+  // this session - closing the file inside this window would lose it.
   commitTimer = window.setTimeout(() => {
     void commitAnnotations();
-  }, 1200);
+  }, 600);
 }
 
 /**
@@ -1506,9 +1522,20 @@ function wireUiManagerAutosave(uiManager: {
 async function commitAnnotations(): Promise<void> {
   if (!pdfDocument || props.isReadOnly || !pdfLoaded.value) return;
   if (commitInFlight) {
+    // A commit is already running on older state. Queue a follow-up and
+    // wait until the queue drains: callers like the explicit save must not
+    // proceed (emit('save')) before the latest changes were taken over
+    // into the emitted document.
     commitQueued = true;
+    while (commitInFlight) await commitRun;
     return;
   }
+  commitRun = runCommit();
+  await commitRun;
+}
+
+async function runCommit(): Promise<void> {
+  if (!pdfDocument) return;
   commitInFlight = true;
   saving.value = true;
   try {
@@ -1915,6 +1942,7 @@ onMounted(() => {
     delete: () => void;
     deleteComment: (editor: unknown, savedData: unknown) => void;
     updateParams: (type: number, value: unknown) => void;
+    commitOrRemove?: () => void;
   }}) => {
     uiManagerRef = uiManager;
     wireUiManagerAutosave(uiManager);

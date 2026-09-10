@@ -10,6 +10,9 @@ userContext.userName = 'harness';
 type HarnessState = {
   emitted: Array<{length: number; head: number[]}>;
   saves: number;
+  /** emitted.length at the moment each save event arrived: the explicit
+   * save must never fire before the latest changes were emitted. */
+  saveEmitCounts: number[];
   errors: string[];
 };
 
@@ -30,6 +33,7 @@ declare global {
 window.__harness = {
   emitted: [],
   saves: 0,
+  saveEmitCounts: [],
   errors: [],
 };
 
@@ -147,6 +151,7 @@ const Host = defineComponent({
         resource,
         onSave: () => {
           window.__harness.saves += 1;
+          window.__harness.saveEmitCounts.push(window.__harness.emitted.length);
         },
         'onUpdate:currentContent': (value: ArrayBuffer) => {
           // The real transport (axios) sends `view.buffer` for typed-array

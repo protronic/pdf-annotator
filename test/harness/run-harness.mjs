@@ -165,6 +165,37 @@ try {
   await page.click('button[title="In OpenCloud speichern"]');
   await page.waitForFunction(() => window.__harness.saves > 0, null, {timeout: 10000});
 
+  // 6c2. Saving right after an edit - while the editor is still active and
+  // an autosave commit may be in flight - must take the change over into
+  // the document BEFORE the save event fires (no stale-save race).
+  await page.click('button[title="Textnotiz einfügen"]');
+  await page.waitForTimeout(300);
+  await page.locator('.pdfViewer .page').first().click({position: {x: 320, y: 340}});
+  await page.keyboard.type('Schnellspeichernotiz');
+  const savesBeforeQuick = await page.evaluate(() => window.__harness.saves);
+  await page.click('button[title="In OpenCloud speichern"]');
+  await page.waitForFunction(
+    (count) => window.__harness.saves > count,
+    savesBeforeQuick,
+    {timeout: 15000},
+  );
+  await page.waitForTimeout(1500);
+  const quickSave = await page.evaluate(() => ({
+    emitted: window.__harness.emitted.length,
+    atSave: window.__harness.saveEmitCounts.at(-1),
+  }));
+  check(
+    quickSave.atSave === quickSave.emitted,
+    `save event must come after the final emission (emitted ${quickSave.emitted}, at save ${quickSave.atSave})`,
+  );
+  const quickVerify = await page.evaluate(() => window.__verifyEmitted());
+  check(
+    quickVerify.annotationContents.some((entry) => entry.includes('Schnellspeichernotiz')),
+    `the quick-saved PDF must contain the fresh note, got [${quickVerify.annotationContents.join(' | ')}]`,
+  );
+  await page.click('button[title="Auswahlwerkzeug"]');
+  await page.waitForTimeout(300);
+
   // 6d. The search bar finds text across pages.
   await page.click('button[title="Suchen"]');
   await page.waitForSelector('.pdfa-find-input', {timeout: 5000});
@@ -313,7 +344,7 @@ if (problems.length) {
   console.error(`✗ pdf-annotator harness\n  ${problems.join('\n  ')}`);
   console.error(consoleLines.join('\n'));
 } else {
-  console.log('✓ pdf-annotator harness: render, annotate, comment, signature, emit, verify, zoom, save, find, menu, about, sidebar, thumbnails, pages, views');
+  console.log('✓ pdf-annotator harness: render, annotate, comment, signature, emit, verify, zoom, save, quick-save, find, menu, about, sidebar, thumbnails, pages, views');
 }
 
 await browser.close();
